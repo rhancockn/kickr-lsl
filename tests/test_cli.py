@@ -1,6 +1,10 @@
 import json
+import os
 import re
+import signal
 import struct
+import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -146,3 +150,21 @@ def test_run_session_unwritable_log_path(tmp_path):
     backend = FakeBackend()
     assert run_session(cfg, backend=backend) == 2
     assert backend.clients == []  # BLE never touched
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal handling")
+def test_run_session_sigint_graceful_shutdown(tmp_path):
+    cfg = parse_config(json.loads(write_config(tmp_path).read_text(encoding="utf-8")))
+    backend = FakeBackend(sessions=[([POWER, POWER], False)])
+    timer = threading.Timer(0.3, os.kill, args=(os.getpid(), signal.SIGINT))
+    timer.start()
+    try:
+        code = run_session(cfg, backend=backend, start=datetime(2026, 10, 20))
+    finally:
+        timer.cancel()
+    assert code == 0
+    records = read_log(tmp_path / "logs" / "cps_20261020.jsonl")
+    assert [r["kind"] for r in records if r["type"] == "event"] == ["clock_sync", "connected", "features", "stopped"]
+    assert len([r for r in records if r["type"] == "sample"]) == 2
+    assert records[-1]["detail"]["reason"] == "user"
+    assert backend.clients[0].is_connected is False
