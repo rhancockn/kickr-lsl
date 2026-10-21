@@ -151,3 +151,16 @@ def test_address_kind_defaults_to_sys_platform(monkeypatch):
     assert address_kind() == "uuid"
     monkeypatch.setattr(sys, "platform", "win32")
     assert address_kind() == "mac"
+
+
+def test_shared_section_parsers_are_public():
+    from wahoo_lsl.config import ConfigError, parse_device, parse_reconnect, pos_number, section
+
+    assert parse_device({"name": " KICKR "}).name == "KICKR"
+    assert parse_reconnect({}).backoff_s == (1.0, 2.0, 5.0, 10.0)
+    assert pos_number(2, "x") == 2.0
+    with pytest.raises(ConfigError):
+        pos_number(0, "x")
+    with pytest.raises(ConfigError):
+        section({"s": {"bad": 1}}, "s", {"good"})
+    assert section({}, "s", {"good"}) == {}

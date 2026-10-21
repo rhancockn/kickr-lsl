@@ -399,3 +399,41 @@ def test_connection_lost_message_falls_back_to_address(caplog):
     with caplog.at_level(logging.WARNING):
         asyncio.run(scenario())
     assert "Connection to AA:BB:CC:DD:EE:07 lost" in warnings(caplog)
+
+
+from wahoo_lsl.ble import find_device  # noqa: E402
+from wahoo_lsl.config import DeviceConfig  # noqa: E402
+
+OTHER_SVC = "0000feed-0000-1000-8000-00805f9b34fb"
+
+
+def test_scan_result_service_uuids_defaults_empty():
+    assert ScanResult("K", "AA", None, False).service_uuids == frozenset()
+
+
+def test_find_device_prefers_predicate_match():
+    plain = SimpleNamespace(name="KICKR A", address="AA:BB:CC:DD:EE:10")
+    svc = SimpleNamespace(name="KICKR B", address="AA:BB:CC:DD:EE:11")
+    backend = FakeBackend(
+        [
+            ScanResult(plain.name, plain.address, -40, True, plain),
+            ScanResult(svc.name, svc.address, -60, False, svc, frozenset({OTHER_SVC})),
+        ]
+    )
+    found = asyncio.run(find_device(backend, DeviceConfig("KICKR"), "linux", lambda r: OTHER_SVC in r.service_uuids))
+    assert found is svc
+
+
+def test_find_device_ambiguous_when_no_predicate_match():
+    a = SimpleNamespace(name="KICKR A", address="AA:BB:CC:DD:EE:10")
+    b = SimpleNamespace(name="KICKR B", address="AA:BB:CC:DD:EE:11")
+    backend = FakeBackend([ScanResult(a.name, a.address, -40, False, a), ScanResult(b.name, b.address, -60, False, b)])
+    with pytest.raises(AmbiguousDevice):
+        asyncio.run(find_device(backend, DeviceConfig("KICKR"), "linux", lambda r: False))
+
+
+def test_find_device_by_mac_uses_address_lookup():
+    backend = FakeBackend()
+    found = asyncio.run(find_device(backend, DeviceConfig("KICKR", mac=KICKR.address), "linux", lambda r: False))
+    assert found is KICKR
+    assert backend.address_lookups == [KICKR.address]

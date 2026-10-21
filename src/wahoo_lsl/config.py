@@ -74,10 +74,10 @@ def parse_config(obj: Any, *, require_measurements: bool = True) -> Config:
     if "device" not in obj:
         raise ConfigError("missing required section 'device'")
     return Config(
-        device=_parse_device(_section(obj, "device", {"name", "mac", "uuid", "scan_timeout_s"})),
+        device=parse_device(section(obj, "device", {"name", "mac", "uuid", "scan_timeout_s"})),
         measurements=_parse_measurements(obj.get("measurements"), require_measurements),
-        log=_parse_log(_section(obj, "log", {"path", "flush_every_n"})),
-        reconnect=_parse_reconnect(_section(obj, "reconnect", {"enabled", "max_attempts", "backoff_s"})),
+        log=_parse_log(section(obj, "log", {"path", "flush_every_n"})),
+        reconnect=parse_reconnect(section(obj, "reconnect", {"enabled", "max_attempts", "backoff_s"})),
         queue_warn_depth=_int(obj.get("queue_warn_depth", 100), "queue_warn_depth", minimum=1),
     )
 
@@ -101,7 +101,7 @@ def select_identifier(device: DeviceConfig, platform: str | None = None) -> tupl
     return "name", device.name
 
 
-def _section(obj: dict, key: str, allowed: set[str]) -> dict:
+def section(obj: dict, key: str, allowed: set[str]) -> dict:
     section = obj.get(key, {})
     if not isinstance(section, dict):
         raise ConfigError(f"'{key}' must be an object")
@@ -115,7 +115,7 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def _pos_number(value: Any, where: str) -> float:
+def pos_number(value: Any, where: str) -> float:
     if not _is_number(value) or value <= 0:
         raise ConfigError(f"{where} must be a positive number, got {value!r}")
     return float(value)
@@ -135,7 +135,7 @@ def _opt_str(value: Any, where: str) -> str | None:
     return value.strip()
 
 
-def _parse_device(d: dict) -> DeviceConfig:
+def parse_device(d: dict) -> DeviceConfig:
     name = d.get("name")
     if not isinstance(name, str) or not name.strip():
         raise ConfigError("device.name must be a non-empty string")
@@ -152,7 +152,7 @@ def _parse_device(d: dict) -> DeviceConfig:
         name=name.strip(),
         mac=mac,
         uuid=uuid,
-        scan_timeout_s=_pos_number(d.get("scan_timeout_s", 10), "device.scan_timeout_s"),
+        scan_timeout_s=pos_number(d.get("scan_timeout_s", 10), "device.scan_timeout_s"),
     )
 
 
@@ -182,7 +182,7 @@ def _parse_log(lg: dict) -> LogConfig:
     return LogConfig(path=path, flush_every_n=_int(lg.get("flush_every_n", 10), "log.flush_every_n", minimum=1))
 
 
-def _parse_reconnect(rc: dict) -> ReconnectConfig:
+def parse_reconnect(rc: dict) -> ReconnectConfig:
     enabled = rc.get("enabled", True)
     if not isinstance(enabled, bool):
         raise ConfigError("reconnect.enabled must be true or false")
@@ -192,5 +192,5 @@ def _parse_reconnect(rc: dict) -> ReconnectConfig:
     return ReconnectConfig(
         enabled=enabled,
         max_attempts=_int(rc.get("max_attempts", 0), "reconnect.max_attempts", minimum=0),
-        backoff_s=tuple(_pos_number(b, "reconnect.backoff_s[]") for b in backoff),
+        backoff_s=tuple(pos_number(b, "reconnect.backoff_s[]") for b in backoff),
     )

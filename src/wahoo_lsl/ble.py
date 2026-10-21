@@ -12,7 +12,7 @@ from bleak import BleakClient, BleakScanner
 from bleak.exc import BleakError
 
 from . import clock
-from .config import Config, address_kind, select_identifier
+from .config import Config, DeviceConfig, address_kind, select_identifier
 from .cps import (
     CP_FEATURE_UUID,
     CP_MEASUREMENT_UUID,
@@ -62,6 +62,7 @@ class ScanResult:
     rssi: int | None
     cps_advertised: bool
     device: Any = field(default=None, compare=False, repr=False)
+    service_uuids: frozenset[str] = frozenset()  # lower-case full UUIDs from the advertisement
 
 
 @dataclass(frozen=True)
@@ -111,6 +112,7 @@ class BleakBackend:
                     rssi=adv.rssi,
                     cps_advertised=CPS_SERVICE_UUID in uuids,
                     device=device,
+                    service_uuids=frozenset(uuids),
                 )
             )
         return results
@@ -126,6 +128,38 @@ async def scan_cps(timeout: float, backend: BleBackend | None = None) -> list[Sc
     """Devices advertising the CPS service, or whose name contains 'KICKR'."""
     results = await (backend or BleakBackend()).discover(timeout)
     return [r for r in results if r.cps_advertised or (r.name and "kickr" in r.name.lower())]
+
+
+async def find_device(
+    backend: BleBackend,
+    device_cfg: DeviceConfig,
+    platform: str,
+    advertises: Callable[[ScanResult], bool],
+) -> Any:
+    """Find the configured device: by mac/uuid when set for this platform, else by name.
+
+    Name matches for which ``advertises`` is true are preferred; more than one candidate
+    raises AmbiguousDevice.
+    """
+    kind, value = select_identifier(device_cfg, platform)
+    timeout = device_cfg.scan_timeout_s
+    if kind != "name":
+        device = await backend.find_by_address(value, timeout)
+        if device is None:
+            raise DeviceNotFound(f"no device with {kind} {value} found within {timeout:g}s")
+        return device
+    needle = value.lower()
+    matches = [r for r in await backend.discover(timeout) if r.name and needle in r.name.lower()]
+    if not matches:
+        raise DeviceNotFound(f"no device with name containing '{value}' found within {timeout:g}s")
+    candidates = [r for r in matches if advertises(r)] or matches
+    if len(candidates) > 1:
+        lines = "\n".join(f"  {r.name}  {r.address}  rssi={r.rssi}" for r in candidates)
+        raise AmbiguousDevice(
+            f"{len(candidates)} devices match name '{value}'; set device.{address_kind(platform)} "
+            f"in the config to choose one:\n{lines}"
+        )
+    return candidates[0].device
 
 
 class CpsClient:
@@ -155,25 +189,7 @@ class CpsClient:
     # ---- discovery & setup -------------------------------------------------
 
     async def find_device(self) -> Any:
-        kind, value = select_identifier(self._cfg.device, self._platform)
-        timeout = self._cfg.device.scan_timeout_s
-        if kind != "name":
-            device = await self._backend.find_by_address(value, timeout)
-            if device is None:
-                raise DeviceNotFound(f"no device with {kind} {value} found within {timeout:g}s")
-            return device
-        needle = value.lower()
-        matches = [r for r in await self._backend.discover(timeout) if r.name and needle in r.name.lower()]
-        if not matches:
-            raise DeviceNotFound(f"no device with name containing '{value}' found within {timeout:g}s")
-        candidates = [r for r in matches if r.cps_advertised] or matches
-        if len(candidates) > 1:
-            lines = "\n".join(f"  {r.name}  {r.address}  rssi={r.rssi}" for r in candidates)
-            raise AmbiguousDevice(
-                f"{len(candidates)} devices match name '{value}'; set device.{address_kind(self._platform)} "
-                f"in the config to choose one:\n{lines}"
-            )
-        return candidates[0].device
+        return await find_device(self._backend, self._cfg.device, self._platform, lambda r: r.cps_advertised)
 
     async def connect_and_read(self) -> DeviceInfo:
         """Connect and read CP Feature / Sensor Location. Leaves the client connected."""
