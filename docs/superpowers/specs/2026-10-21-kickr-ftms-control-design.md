@@ -92,12 +92,14 @@ can be used from an experiment environment that lacks `bleak`/`pylsl`. `ftms/cli
 
 - `ble.ScanResult` gains `service_uuids: frozenset[str] = frozenset()` (lower-case 128-bit
   strings), filled by `BleakBackend.discover`. `cps_advertised` stays.
-- `ble.find_device(backend, device_cfg, platform, service_uuid) -> device` is extracted from
+- `ble.find_device(backend, device_cfg, platform, advertises) -> device` is extracted from
   `CpsClient.find_device` (same rules: mac/uuid → `find_by_address`; else name match,
-  prefer devices advertising `service_uuid`, `AmbiguousDevice` on >1). `CpsClient.find_device`
-  calls it with the CPS UUID. Existing tests must still pass unchanged.
-- `config.py`: `_section`, `_parse_device`, `_parse_reconnect` are renamed to public
-  `section`, `parse_device`, `parse_reconnect` (call sites updated); `ConfigError` reused.
+  prefer results for which `advertises(scan_result)` is true, `AmbiguousDevice` on >1).
+  `CpsClient.find_device` passes `lambda r: r.cps_advertised`; FTMS passes
+  `lambda r: FTMS_SERVICE_UUID in r.service_uuids`. Existing tests must still pass unchanged.
+- `config.py`: `_section`, `_parse_device`, `_parse_reconnect`, `_pos_number` are renamed to
+  public `section`, `parse_device`, `parse_reconnect`, `pos_number` (call sites updated);
+  `ConfigError` reused.
 
 ## 4. Clocks
 
@@ -237,27 +239,34 @@ The only serialisation is `FtmsLink`'s `asyncio.Lock` around control-point comma
 ```python
 class FtmsLink:
     def __init__(self, cfg: FtmsConfig, *, backend: BleBackend | None = None,
-                 platform: str | None = None,
-                 on_bike_data: Callable[[BikeData, float], None],     # (data, t_lsl)
-                 on_status: Callable[[StatusEvent, float], None],
-                 on_link_lost: Callable[[str], None]) -> None
+                 platform: str | None = None) -> None
+    # Handlers, assigned by the Controller (default: no-op). All called on the loop thread.
+    on_bike_data: Callable[[BikeData, float], None]     # (data, t_lsl)
+    on_status: Callable[[StatusEvent, float], None]      # (event, t_lsl)
+    on_link_lost: Callable[[str], None]                  # (reason)
     power_range: PowerRange          # valid after open()
     async def open(self) -> None     # §7.3 steps 1–4; raises FtmsSetupError (exit 3)
-    async def command(self, payload: bytes) -> CpResponse   # raises CommandError / CommandTimeout
+    async def command(self, payload: bytes) -> CpResponse   # raises LinkError / CommandRejected
     async def close(self) -> None    # bounded (SHUTDOWN_TIMEOUT_S) disconnect; idempotent
     @property
     def connected(self) -> bool
 ```
+
+Errors: `LinkError` = transport failure (not connected, write failed, link closed while
+waiting); `CommandTimeout(LinkError)` = no response within `ack_timeout_s`;
+`CommandRejected(opcode, result)` = the device answered with a result other than success.
+`FtmsSetupError(BleSetupError)`, `FtmsUnsupported(FtmsSetupError)`.
 
 `command()`:
 1. Acquire the lock (one outstanding control-point op).
 2. Create a future keyed by the request opcode **before** writing (the indication may arrive
    before the write call returns).
 3. `write_gatt_char(cp_char, payload, response=True)`.
-4. Await the future for `ack_timeout_s`. Timeout → `CommandTimeout`. Response result ≠ success
-   → `CommandError(opcode, result)`. Responses for an opcode with no waiter are logged at
-   DEBUG and dropped.
-5. Comms errors (`COMMS_ERRORS`) propagate as `CommandError` with the exception text.
+4. Steps 3 and 4 together are bounded by `ack_timeout_s`. Timeout → `CommandTimeout`.
+   Response result ≠ success → `CommandRejected(opcode, result)`. Responses for an opcode
+   with no waiter are logged at DEBUG and dropped.
+5. Comms errors (`BleakError`, `OSError`) → `LinkError` with the exception text. `close()`
+   fails any pending waiter with `LinkError("link closed")`.
 
 Debug logging (logger `wahoo_lsl.ftms.link`, DEBUG): every write (hex, opcode name), every
 indication (hex, decoded, round-trip ms from write), every status and bike-data notification
@@ -277,8 +286,9 @@ as in `CpsClient`) or a status `0xFF` (control permission lost) calls `on_link_l
    Any failure → `FtmsSetupError` (nothing left connected).
 5. Controller marks `link = "ready"`, `confirmed_w = 0`, `requested_w = 0`, `link_epoch += 1`.
 
-The TCP server starts listening only after the first successful startup; it stays up
-through later reconnects. Failure of the first startup exits with code 3.
+The TCP port is **bound** before the first BLE startup (so "port in use" fails in
+milliseconds with exit 2) but **accepts** connections only after the first successful
+startup; it stays up through later reconnects. Failure of the first startup exits with code 3.
 
 ### 7.4 Controller state & reconnect (`ftms/controller.py`)
 
@@ -298,7 +308,7 @@ class State:
 
 `pending` (reported) = `link == "ready" and requested_w != confirmed_w`.
 
-On `on_link_lost(reason)` (or 3 consecutive `CommandTimeout`s):
+On `on_link_lost(reason)` (or 3 consecutive `LinkError`s from the sender):
 `link = "reconnecting"`, `last_error = "link lost: <reason>; target reset to 0 W"`,
 `requested_w = 0`, `confirmed_w = None`; close the BLE client (bounded), then retry §7.3
 with `ReconnectPolicy` from config. On success → step 5 (epoch bump, 0 W confirmed). If
@@ -327,10 +337,12 @@ loop:
     last_send_t = now
     try command(set_target_power(target)):
         success → confirmed_w = target, confirmed_t_lsl = now; consecutive_timeouts = 0
-    CommandTimeout → last_error, consecutive_timeouts += 1, retry after min_interval;
-                     3 in a row → treat as link lost (§7.4)
-    CommandError   → last_error, retry after min_interval (max 3 retries per target value,
-                     then stop retrying until a new target arrives)
+    LinkError       → last_error, consecutive_failures += 1, retry after min_interval;
+                      3 in a row → treat as link lost (§7.4)
+    CommandRejected → last_error, retry after min_interval; after 3 rejections stop retrying
+                      until the next request_target() call
+    success only counts if link_epoch is unchanged since the send (a reconnect in between
+    must not mark a stale value confirmed)
 ```
 A single `set` after an idle period is sent immediately. Intermediate values requested
 during the sleep are never sent (DEBUG log: "coalesced N targets").
@@ -345,7 +357,8 @@ WARNING on failure. Returns success. Never raises.
 Triggers:
 - client disconnect (EOF, connection reset, handler exception) → `spin_down("client disconnected")`;
   service keeps running and accepts the next client.
-- unexpected exception in any task → `spin_down("internal error")`, then shutdown, exit 1.
+- unexpected exception in any task → shutdown with `Controller.close(reason="internal error")`
+  (which spins down), exit 1.
 - SIGINT/SIGTERM (handlers on non-win32; KeyboardInterrupt on win32) → shutdown §7.7, exit 0.
   A second signal forces immediate exit (as in the logger).
 
