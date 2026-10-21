@@ -5,12 +5,21 @@ import asyncio
 import struct
 from types import SimpleNamespace
 
+from bleak.exc import BleakError
+
 from wahoo_lsl.ble import ScanResult
-from wahoo_lsl.cps import CP_FEATURE_UUID, CPS_SERVICE_UUID, SENSOR_LOCATION_UUID
+from wahoo_lsl.cps import CP_FEATURE_UUID, CP_MEASUREMENT_UUID, CPS_SERVICE_UUID, SENSOR_LOCATION_UUID
 
 KICKR = SimpleNamespace(name="KICKR CORE 1234", address="AA:BB:CC:DD:EE:01")
 WHEEL_AND_CRANK = struct.pack("<I", 0b1100)
 ALWAYS = 10**9
+
+
+class FakeService:
+    def get_characteristic(self, uuid: str):
+        if uuid in (CP_FEATURE_UUID, CP_MEASUREMENT_UUID, SENSOR_LOCATION_UUID):
+            return SimpleNamespace(uuid=uuid)
+        return None
 
 
 class FakeServices:
@@ -18,10 +27,12 @@ class FakeServices:
         self._has_cps = has_cps
 
     def get_service(self, uuid: str):
-        return object() if uuid == CPS_SERVICE_UUID and self._has_cps else None
+        return FakeService() if uuid == CPS_SERVICE_UUID and self._has_cps else None
 
     def get_characteristic(self, uuid: str):
-        return object() if uuid == SENSOR_LOCATION_UUID else None
+        if uuid == SENSOR_LOCATION_UUID:  # CSC + CPS both carry Sensor Location, as on real trainers
+            raise BleakError("Multiple Characteristics with this UUID")
+        return None
 
 
 class FakeClient:
@@ -39,14 +50,15 @@ class FakeClient:
             raise OSError("simulated connect failure")
         self.is_connected = True
 
-    async def read_gatt_char(self, uuid: str) -> bytearray:
+    async def read_gatt_char(self, char) -> bytearray:
+        uuid = char.uuid
         if uuid == CP_FEATURE_UUID:
             return bytearray(self.backend.feature_bytes)
         if uuid == SENSOR_LOCATION_UUID:
             return bytearray([13])  # Rear hub
         raise AssertionError(f"unexpected read {uuid}")
 
-    async def start_notify(self, uuid: str, callback) -> None:
+    async def start_notify(self, char, callback) -> None:
         if self.backend.fail_start_notify:
             raise OSError("simulated start_notify failure")
         self.notify_callback = callback
@@ -54,7 +66,7 @@ class FakeClient:
             payloads, drop_after = self.backend.sessions.pop(0)
             asyncio.get_running_loop().call_soon(self._play, payloads, drop_after)
 
-    async def stop_notify(self, uuid: str) -> None:
+    async def stop_notify(self, char) -> None:
         self.notify_callback = None
 
     async def disconnect(self) -> None:

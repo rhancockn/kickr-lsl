@@ -139,6 +139,14 @@ def test_read_info_reads_features_and_disconnects():
     assert items == []  # intentional disconnect emits nothing
 
 
+def test_characteristics_resolved_on_cps_service():
+    # FakeServices.get_characteristic raises for Sensor Location (duplicate across services)
+    client, _ = make_client(FakeBackend())
+    info = asyncio.run(client.read_info())
+    assert info.sensor_location == "Rear hub"
+    assert info.features.supported == {"power", "wheel_revolutions", "crank_revolutions"}
+
+
 def test_read_info_no_cps_service():
     backend = FakeBackend(has_cps=False)
     client, _ = make_client(backend)

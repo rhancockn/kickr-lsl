@@ -144,6 +144,7 @@ class CpsClient:
         self._platform = platform or sys.platform
         self._client: Any = None  # current client; None means "ignore disconnect callbacks"
         self._info: DeviceInfo | None = None
+        self._measurement_char: Any = None
         self._seq = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._disconnected: asyncio.Event | None = None
@@ -178,12 +179,22 @@ class CpsClient:
         self._client = client
         try:
             await client.connect()
-            if client.services.get_service(CPS_SERVICE_UUID) is None:
+            service = client.services.get_service(CPS_SERVICE_UUID)
+            if service is None:
                 raise NoCpsService(f"{getattr(device, 'name', device)} does not expose the Cycling Power Service")
-            features = parse_features(await client.read_gatt_char(CP_FEATURE_UUID))
+            # Resolve on the service, not the collection: other services (e.g. CSC) may repeat a UUID.
+            feature_char = service.get_characteristic(CP_FEATURE_UUID)
+            if feature_char is None:
+                raise NoCpsService("Cycling Power Service has no CP Feature characteristic")
+            measurement_char = service.get_characteristic(CP_MEASUREMENT_UUID)
+            if measurement_char is None:
+                raise NoCpsService("Cycling Power Service has no CP Measurement characteristic")
+            self._measurement_char = measurement_char
+            features = parse_features(await client.read_gatt_char(feature_char))
             location = None
-            if client.services.get_characteristic(SENSOR_LOCATION_UUID) is not None:
-                loc_raw = await client.read_gatt_char(SENSOR_LOCATION_UUID)
+            location_char = service.get_characteristic(SENSOR_LOCATION_UUID)
+            if location_char is not None:
+                loc_raw = await client.read_gatt_char(location_char)
                 location = sensor_location_name(loc_raw[0]) if loc_raw else None
         except BaseException:
             await self._safe_disconnect()
@@ -213,7 +224,7 @@ class CpsClient:
             info = await self.connect_and_read()
             self._emit(make_event("connected", name=info.name, address=info.address, address_kind=info.address_kind))
             self._report_features(info)  # before subscribing, so it precedes all samples
-            await self._client.start_notify(CP_MEASUREMENT_UUID, self._on_notify)
+            await self._client.start_notify(self._measurement_char, self._on_notify)
         except BleSetupError:
             raise
         except (ParseError, *COMMS_ERRORS) as e:
@@ -315,7 +326,7 @@ class CpsClient:
         client = self._client
         if client is not None and getattr(client, "is_connected", False):
             try:
-                await client.stop_notify(CP_MEASUREMENT_UUID)
+                await client.stop_notify(self._measurement_char)
             except Exception as e:
                 log.debug("stop_notify failed during shutdown: %s", e)
         await self._safe_disconnect()
