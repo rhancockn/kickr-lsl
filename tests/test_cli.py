@@ -235,6 +235,7 @@ def test_run_session_pipeline_close_failure_is_exit_1(tmp_path, monkeypatch, cap
     assert any("Queue sizes at shutdown" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal handling")
 def test_run_session_pipeline_close_failure_upgrades_ok_to_exit_1(tmp_path, monkeypatch):
     blocking = BlockingSink()
     monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_S", 0.2, raising=False)
