@@ -247,7 +247,7 @@ class Features:
     flags: dict[str, bool | int]  # every named bit below; distributed_system_support is int 0–3
     supported: frozenset[str]     # measurement names from 6.3 (always includes "power")
 
-def parse_features(data: bytes) -> Features   # requires >= 4 bytes else ParseError
+def parse_features(data: bytes) -> Features   # 1-4+ bytes; short payloads zero-padded (KICKR V6 sends 2); empty -> ParseError
 ```
 
 Named feature bits (for printing in `list-features`): 0 pedal_power_balance,

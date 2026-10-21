@@ -188,11 +188,15 @@ class Features:
 
 
 def parse_features(data: bytes | bytearray) -> Features:
-    """Decode the 32-bit CP Feature characteristic. Extra bytes are ignored."""
+    """Decode the 32-bit CP Feature characteristic. Extra bytes are ignored.
+
+    Some devices (e.g. KICKR V6) send fewer than 4 bytes; missing high bytes are
+    treated as zero, i.e. those features are not supported.
+    """
     data = bytes(data)
-    if len(data) < 4:
-        raise ParseError(f"CP Feature needs 4 bytes, got {len(data)}")
-    (raw,) = struct.unpack_from("<I", data)
+    if not data:
+        raise ParseError("CP Feature is empty")
+    (raw,) = struct.unpack_from("<I", data[:4].ljust(4, b"\x00"))
     flags: dict[str, bool | int] = {name: bool((raw >> bit) & 1) for bit, name in FEATURE_BITS.items()}
     flags[DISTRIBUTED_SYSTEM_SUPPORT] = (raw >> 20) & 0b11
     torque_based = bool((raw >> _TORQUE_CONTEXT_BIT) & 1)

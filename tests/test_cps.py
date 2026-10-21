@@ -265,9 +265,17 @@ def test_distributed_system_support_two_bit_value():
     assert parse_features(feat(3 << 20)).flags["distributed_system_support"] == 3
 
 
-def test_features_short_payload():
+def test_features_empty_payload():
     with pytest.raises(ParseError):
-        parse_features(b"\x01\x02\x03")
+        parse_features(b"")
+
+
+def test_features_short_payload_zero_padded():
+    # KICKR V6 sends a 2-byte CP Feature; missing high bytes mean "not supported".
+    f = parse_features(b"\x0e\x12")
+    assert f.raw == 0x120E
+    assert {"wheel_revolutions", "crank_revolutions", "accumulated_torque"} <= f.supported
+    assert parse_features(b"\x01\x02\x03").raw == 0x030201
 
 
 def test_features_extra_bytes_ignored():

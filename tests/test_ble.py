@@ -163,7 +163,7 @@ def test_read_info_comms_error_is_setup_error():
 
 
 def test_read_info_bad_feature_payload_is_setup_error():
-    client, _ = make_client(FakeBackend(feature_bytes=b"\x01"))
+    client, _ = make_client(FakeBackend(feature_bytes=b""))
     with pytest.raises(BleSetupError):
         asyncio.run(client.read_info())
 
