@@ -1,0 +1,25 @@
+[project]
+name = "wahoo-lsl"
+version = "0.1.0"
+description = "Stream and log Cycling Power Service data from a Wahoo KICKR over BLE"
+requires-python = ">=3.10"
+dependencies = [
+    "bleak>=1.0",
+    "pylsl>=1.17",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+wahoo-lsl = "wahoo_lsl.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

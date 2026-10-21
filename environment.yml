@@ -1,0 +1,9 @@
+# Recreate with: conda env create -f environment.yml   (then: conda run -n wahoo python -m pip install -e .)
+name: wahoo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -r requirements-dev.txt
