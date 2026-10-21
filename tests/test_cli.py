@@ -1,4 +1,6 @@
 import json
+import logging
+import time
 import os
 import re
 import signal
@@ -12,9 +14,12 @@ import pytest
 from fakes import KICKR, FakeBackend
 
 from wahoo_lsl.ble import DeviceInfo, ScanResult
+import wahoo_lsl.ble as ble_mod
+import wahoo_lsl.cli as cli_mod
 from wahoo_lsl.cli import build_parser, format_features, format_scan, main, run_session
 from wahoo_lsl.config import parse_config
 from wahoo_lsl.cps import parse_features
+from wahoo_lsl.pipeline import Sink
 
 POWER = struct.pack("<Hh", 0, 200)
 WHEEL = struct.pack("<Hh", 1 << 4, 150) + struct.pack("<IH", 10, 2048)
@@ -168,3 +173,86 @@ def test_run_session_sigint_graceful_shutdown(tmp_path):
     assert len([r for r in records if r["type"] == "sample"]) == 2
     assert records[-1]["detail"]["reason"] == "user"
     assert backend.clients[0].is_connected is False
+
+
+def load_cfg(tmp_path):
+    return parse_config(json.loads(write_config(tmp_path).read_text(encoding="utf-8")))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal handling")
+def test_run_session_sigint_during_slow_scan(tmp_path):
+    backend = FakeBackend(discover_delay=5, on_discover=lambda: os.kill(os.getpid(), signal.SIGINT))
+    t0 = time.monotonic()
+    code = run_session(load_cfg(tmp_path), backend=backend, start=datetime(2026, 10, 20))
+    assert time.monotonic() - t0 < 1.0
+    assert code == 0
+    records = read_log(tmp_path / "logs" / "cps_20261020.jsonl")
+    assert [r["kind"] for r in records] == ["clock_sync", "stopped"]
+    assert records[-1]["detail"]["reason"] == "user"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal handling")
+def test_run_session_second_sigint_forces_exit(tmp_path, monkeypatch):
+    monkeypatch.setattr(ble_mod, "SHUTDOWN_TIMEOUT_S", 30.0, raising=False)
+    backend = FakeBackend(sessions=[([POWER], False)], hang_stop_notify=True)
+    timers = [threading.Timer(t, os.kill, args=(os.getpid(), signal.SIGINT)) for t in (0.3, 0.6)]
+    for t in timers:
+        t.start()
+    t0 = time.monotonic()
+    try:
+        code = run_session(load_cfg(tmp_path), backend=backend, start=datetime(2026, 10, 20))
+    finally:
+        for t in timers:
+            t.cancel()
+    assert time.monotonic() - t0 < 5.0
+    assert code == 0
+    records = read_log(tmp_path / "logs" / "cps_20261020.jsonl")
+    assert records[-1]["kind"] == "stopped" and records[-1]["detail"]["reason"] == "user"
+    assert backend.clients[0].is_connected is False
+
+
+class BlockingSink(Sink):
+    name = "blocking"
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def handle(self, item) -> None:
+        self.release.wait(10)
+
+
+def test_run_session_pipeline_close_failure_is_exit_1(tmp_path, monkeypatch, caplog):
+    blocking = BlockingSink()
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_S", 0.2, raising=False)
+    monkeypatch.setattr(cli_mod, "ConsoleSink", lambda: blocking)
+    try:
+        with caplog.at_level(logging.WARNING):
+            code = run_session(load_cfg(tmp_path), debug=True, backend=FakeBackend([]), start=datetime(2026, 10, 20))
+    finally:
+        blocking.release.set()
+    assert code == 3  # an existing non-zero code is kept
+    assert any("did not stop" in r.getMessage() for r in caplog.records)
+    assert any("Queue sizes at shutdown" in r.getMessage() for r in caplog.records)
+
+
+def test_run_session_pipeline_close_failure_upgrades_ok_to_exit_1(tmp_path, monkeypatch):
+    blocking = BlockingSink()
+    monkeypatch.setattr(cli_mod, "CLOSE_TIMEOUT_S", 0.2, raising=False)
+    monkeypatch.setattr(cli_mod, "ConsoleSink", lambda: blocking)
+    backend = FakeBackend(sessions=[([POWER], False)])
+    timer = threading.Timer(0.3, os.kill, args=(os.getpid(), signal.SIGINT))
+    timer.start()
+    try:
+        code = run_session(load_cfg(tmp_path), debug=True, backend=backend, start=datetime(2026, 10, 20))
+    finally:
+        timer.cancel()
+        blocking.release.set()
+    assert code == 1
+
+
+def test_main_unwritable_diag_log_exit_2(tmp_path, capsys):
+    blocker = tmp_path / "afile"
+    blocker.write_text("x", encoding="utf-8")
+    p = write_config(tmp_path)
+    assert main(["run", "-c", str(p), "--diag-log", str(blocker / "diag.log")], backend=FakeBackend()) == 2
+    assert "diag-log" in capsys.readouterr().err

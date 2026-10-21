@@ -35,6 +35,8 @@ EXIT_SETUP = 3
 EXIT_RECONNECT = 4
 EXIT_INTERRUPTED = 130
 
+CLOSE_TIMEOUT_S = 5.0  # per-thread join timeout when closing the pipeline
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -99,7 +101,11 @@ def format_features(info: DeviceInfo, measurements: Sequence[str]) -> str:
 
 def main(argv: Sequence[str] | None = None, *, backend: BleBackend | None = None) -> int:
     args = build_parser().parse_args(argv)
-    setup_logging(args.debug, getattr(args, "diag_log", None))
+    try:
+        setup_logging(args.debug, getattr(args, "diag_log", None))
+    except OSError as e:
+        print(f"wahoo-lsl: cannot write --diag-log {args.diag_log}: {e}", file=sys.stderr)
+        return EXIT_CONFIG
     try:
         if args.command == "scan":
             print(format_scan(asyncio.run(scan_cps(args.timeout, backend))))
@@ -154,8 +160,8 @@ def run_session(
     code, reason = EXIT_OK, "user"
     try:
         asyncio.run(_stream(client))
-    except KeyboardInterrupt:
-        pass  # Windows Ctrl-C; client.run() has already disconnected in its finally block
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        pass  # Windows Ctrl-C, or a second POSIX Ctrl-C; client.run() has already disconnected in its finally block
     except BleSetupError as e:
         log.error("%s", e)
         code, reason = EXIT_SETUP, "setup_error"
@@ -167,7 +173,10 @@ def run_session(
         code, reason = EXIT_ERROR, "error"
     finally:
         pipeline.put(make_event("stopped", reason=reason))
-        pipeline.close(timeout=5.0)
+        if not pipeline.close(timeout=CLOSE_TIMEOUT_S):
+            log.warning("Queue sizes at shutdown (items not yet processed): %s", pipeline.queue_sizes())
+            if code == EXIT_OK:
+                code = EXIT_ERROR
     log.info("Stopped (%s)", reason)
     return code
 
@@ -176,6 +185,14 @@ async def _stream(client: CpsClient) -> None:
     stop = asyncio.Event()
     if sys.platform != "win32":  # add_signal_handler is not implemented on Windows event loops
         loop = asyncio.get_running_loop()
+        main_task = asyncio.current_task()
+
+        def on_signal() -> None:
+            if stop.is_set():
+                main_task.cancel()  # second Ctrl-C: stop waiting for a graceful shutdown
+            else:
+                stop.set()
+
         for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop.set)
+            loop.add_signal_handler(sig, on_signal)
     await client.run(stop)

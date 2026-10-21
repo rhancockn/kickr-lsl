@@ -253,6 +253,9 @@ class Pipeline:
         """Thread-safe, non-blocking. Used as the BLE layer's emit callback."""
         self.ingest_q.put_nowait(item)
 
+    def queue_sizes(self) -> dict[str, int]:
+        return {"ingest": self.ingest_q.qsize(), **{r.name: r.queue.qsize() for r in self.runners}}
+
     def close(self, timeout: float = 5.0) -> bool:
         """Send STOP, join all threads. Return False if any thread failed to stop in time."""
         self.ingest_q.put(STOP)
