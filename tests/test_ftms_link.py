@@ -298,3 +298,15 @@ def test_close_bounded_when_disconnect_hangs(monkeypatch):
         await asyncio.wait_for(link.close(), 1.0)
 
     asyncio.run(scenario())
+
+
+def test_open_connect_timeout_is_setup_error(monkeypatch):
+    backend = FakeFtmsBackend()
+    link, _ = make_link(backend)
+
+    async def timing_out_connect(self):
+        raise asyncio.TimeoutError()  # not an OSError before Python 3.11
+
+    monkeypatch.setattr(type(backend.make_client(None, None)), "connect", timing_out_connect)
+    with pytest.raises(FtmsSetupError):
+        asyncio.run(link.open())

@@ -189,6 +189,7 @@ class Controller:
             await asyncio.wait_for(self._link.command(p.set_target_power(0)), SPIN_DOWN_TIMEOUT_S)
         except Exception as e:
             self._set_error(f"spin-down ({reason}) failed: {e or type(e).__name__}")
+            self._wake.set()  # requested_w is 0: let the rate-limited sender retry 0 W
             return False
         self._confirm(0, epoch)
         log.info("spin-down (%s): 0 W confirmed", reason)

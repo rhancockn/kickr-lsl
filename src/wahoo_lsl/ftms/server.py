@@ -96,11 +96,13 @@ class ControlServer:
         finally:
             self._active = None
             writer.close()
-            with suppress(ConnectionError):
-                await writer.wait_closed()
             log.info("Client disconnected: %s", peer)
+            # Spin down before awaiting wait_closed: Controller.spin_down zeroes requested_w
+            # before its first await, so a reconnecting client's later set always wins.
             if not self._closing:
                 await self._controller.spin_down("client disconnected")
+            with suppress(ConnectionError):
+                await writer.wait_closed()
 
     def _dispatch(self, line: bytes) -> dict[str, Any]:
         try:

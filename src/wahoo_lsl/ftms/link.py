@@ -13,7 +13,7 @@ from typing import Any
 from bleak.exc import BleakError
 
 from .. import clock
-from ..ble import BleBackend, BleakBackend, BleSetupError, _bounded, find_device
+from ..ble import COMMS_ERRORS, BleBackend, BleakBackend, BleSetupError, _bounded, find_device
 from . import protocol as p
 from .config import FtmsConfig
 
@@ -83,7 +83,7 @@ class FtmsLink:
         except BleSetupError:
             await self.close()
             raise
-        except (p.ProtocolError, LinkError, CommandRejected, BleakError, OSError) as e:
+        except (p.ProtocolError, LinkError, CommandRejected, *COMMS_ERRORS) as e:
             await self.close()
             raise FtmsSetupError(f"FTMS setup failed: {e}") from e
         except BaseException:

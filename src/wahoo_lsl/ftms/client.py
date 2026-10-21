@@ -1,12 +1,15 @@
 """Python client for the FTMS control service (spec §9.1). Standard library only.
 
 Each call is one localhost round trip (well under a millisecond); BLE latency is hidden by
-the service. Not thread-safe: use one KickrClient per thread. Closing the client (or the
-process exiting) makes the service spin the trainer down to 0 W.
+the service. Use one KickrClient per process (the service accepts a single client); it is
+not thread-safe. Any failure mid-call (timeout, interrupt, malformed reply) closes the client:
+later calls raise ConnectionError without sending. Closing the client (or the process
+exiting) makes the service spin the trainer down to 0 W.
 """
 from __future__ import annotations
 
 import json
+import operator
 import socket
 from typing import Any, NamedTuple
 
@@ -46,26 +49,23 @@ class Status(NamedTuple):
 
 class KickrClient:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout_s: float = 2.0) -> None:
+        self._closed = True  # until fully constructed
         self._sock = socket.create_connection((host, port), timeout=timeout_s)
-        self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        self._file = self._sock.makefile("rb")
+        try:
+            self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self._file = self._sock.makefile("rb")
+        except BaseException:
+            self._sock.close()
+            raise
         self._closed = False
 
     def set_target_power(self, watts: int) -> int:
         """Request a target; returns the accepted (possibly clamped) value immediately."""
-        return int(self._request({"cmd": "set", "watts": watts})["target_w"])
+        watts = operator.index(watts)  # accepts numpy integers; rejects floats with TypeError
+        return self._request({"cmd": "set", "watts": watts}, lambda r: int(r["target_w"]))
 
     def read(self) -> Status:
-        r = self._request({"cmd": "read"})
-        t, pw = r["target"], r["power"]
-        return Status(
-            link=r["link"],
-            link_epoch=r["link_epoch"],
-            target=TargetState(t["requested_w"], t["confirmed_w"], t["pending"], t["t_lsl"]),
-            power=PowerReading(pw["watts"], pw["t_lsl"], pw["age_s"]),
-            last_error=r.get("last_error"),
-            last_error_t_lsl=r.get("last_error_t_lsl"),
-        )
+        return self._request({"cmd": "read"}, _parse_status)
 
     def read_target_power(self) -> TargetState:
         return self.read().target
@@ -77,8 +77,10 @@ class KickrClient:
         if self._closed:
             return
         self._closed = True
-        self._file.close()
-        self._sock.close()
+        try:
+            self._file.close()
+        finally:
+            self._sock.close()
 
     def __enter__(self) -> "KickrClient":
         return self
@@ -86,12 +88,32 @@ class KickrClient:
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
-    def _request(self, obj: dict[str, Any]) -> dict[str, Any]:
-        self._sock.sendall(json.dumps(obj).encode("utf-8") + b"\n")
-        line = self._file.readline()
-        if not line:
-            raise ConnectionError("the FTMS service closed the connection")
-        reply = json.loads(line)
-        if not reply.get("ok"):
-            raise KickrError(reply.get("error", "unknown"), reply.get("detail", ""))
-        return reply
+    def _request(self, obj: dict[str, Any], parse: Any) -> Any:
+        if self._closed:
+            raise ConnectionError("client is closed")
+        try:
+            self._sock.sendall(json.dumps(obj).encode("utf-8") + b"\n")
+            line = self._file.readline()
+            if not line:
+                raise ConnectionError("the FTMS service closed the connection")
+            reply = json.loads(line)
+            if not reply.get("ok"):
+                raise KickrError(reply.get("error", "unknown"), reply.get("detail", ""))
+            return parse(reply)
+        except KickrError:
+            raise  # a well-formed error reply; the connection stays in sync
+        except BaseException:
+            self.close()  # unknown stream state: never reuse it (the service spins down)
+            raise
+
+
+def _parse_status(r: dict[str, Any]) -> Status:
+    t, pw = r["target"], r["power"]
+    return Status(
+        link=r["link"],
+        link_epoch=r["link_epoch"],
+        target=TargetState(t["requested_w"], t["confirmed_w"], t["pending"], t["t_lsl"]),
+        power=PowerReading(pw["watts"], pw["t_lsl"], pw["age_s"]),
+        last_error=r.get("last_error"),
+        last_error_t_lsl=r.get("last_error_t_lsl"),
+    )

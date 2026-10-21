@@ -233,3 +233,37 @@ def test_close_with_active_client_does_not_spin_down_from_handler():
 
     run(scenario)
     assert ctl.spin_downs == []  # shutdown spins down via Controller.close, not the handler
+
+
+def test_disconnect_spin_down_starts_before_wait_closed(monkeypatch):
+    # A reconnecting client's set must not be overtaken by the old client's spin-down, so the
+    # spin-down has to be issued synchronously after _active is cleared, not after wait_closed.
+    ctl = StubController()
+    gate = asyncio.Event()
+    real_wait_closed = asyncio.StreamWriter.wait_closed
+    blocked: list[bool] = []
+
+    async def gated_wait_closed(self):
+        if not blocked:
+            blocked.append(True)
+            await gate.wait()
+        await real_wait_closed(self)
+
+    monkeypatch.setattr(asyncio.StreamWriter, "wait_closed", gated_wait_closed)
+
+    async def scenario():
+        server = await serving(ctl)
+        r1, w1 = await asyncio.open_connection("127.0.0.1", server.port)
+        await ask(r1, w1, {"cmd": "set", "watts": 100})
+        w1.close()
+        await until(lambda: ctl.spin_downs == ["client disconnected"])
+        assert not gate.is_set()  # spin-down began while the old connection was still closing
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = await ask(r2, w2, {"cmd": "set", "watts": 150})
+        assert reply["ok"] and reply["target_w"] == 150
+        gate.set()
+        w2.close()
+        await server.close()
+
+    run(scenario)
+    assert ctl.requests == [100, 150]

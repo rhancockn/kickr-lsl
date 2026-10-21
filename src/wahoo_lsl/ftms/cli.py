@@ -142,7 +142,10 @@ def serve(config_path: Path, *, debug: bool = False, diag_log: Path | None = Non
     try:
         return asyncio.run(_serve(cfg, backend))
     except (KeyboardInterrupt, asyncio.CancelledError):
-        return EXIT_OK  # Windows Ctrl-C or a second POSIX signal; _serve's finally has already spun down
+        # Windows Ctrl-C or a second POSIX signal. A second signal can cancel _serve inside its
+        # finally, so the spin-down may not have completed.
+        log.warning("forced exit; spin-down to 0 W may not have completed")
+        return EXIT_OK
 
 
 async def _serve(cfg: Any, backend: Any = None, stop: asyncio.Event | None = None) -> int:

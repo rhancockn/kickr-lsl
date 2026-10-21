@@ -6,7 +6,7 @@ import pytest
 from wahoo_lsl.ble import ReconnectExhausted
 from wahoo_lsl.ftms.config import parse_ftms_config
 from wahoo_lsl.ftms.controller import Controller, LinkDown
-from wahoo_lsl.ftms.link import CommandRejected, FtmsSetupError, LinkError
+from wahoo_lsl.ftms.link import CommandRejected, CommandTimeout, FtmsSetupError, LinkError
 from wahoo_lsl.ftms.protocol import BikeData, CpResponse, PowerRange, StatusEvent
 
 
@@ -426,3 +426,21 @@ def test_inflight_failure_after_link_lost_keeps_link_lost_error(outcome):
         return err
 
     assert asyncio.run(scenario()).startswith("link lost: connection lost")
+
+
+@pytest.mark.parametrize("error", [LinkError("gone"), CommandTimeout("no reply")])
+def test_failed_spin_down_is_retried_by_the_sender(error):
+    ctl, link, _ = make()
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(150)
+        await until(lambda: ctl.state.confirmed_w == 150)
+        link.command_results = [error]
+        assert await ctl.spin_down("test") is False
+        await until(lambda: ctl.state.confirmed_w == 0)
+        await ctl.close()
+
+    asyncio.run(scenario())
+    assert watts(link)[-1] == 0
+    assert watts(link).count(0) >= 2  # the failed attempt and the sender's retry

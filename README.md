@@ -104,6 +104,13 @@ The trainer goes back to 0 W whenever the client disconnects (including when `wa
 exits), on any service error, and on shutdown. After a BLE drop the service reconnects and sets
 0 W; `link_epoch` increases and the client must send its target again.
 
+A second Ctrl-C while `serve` is shutting down forces an immediate exit; the spin-down to 0 W
+may then not complete.
+
+Exit codes: `serve` 0 clean · 1 unexpected error · 2 config / port in use / unwritable diagnostic log ·
+3 BLE setup failed · 4 reconnect exhausted. `read` / `set` 0 ok · 1 service error ·
+2 cannot reach the service · 3 target not confirmed in time · 130 Ctrl-C.
+
 From Python (standard library only; no bleak/pylsl needed in the client's environment):
 
 ```python
