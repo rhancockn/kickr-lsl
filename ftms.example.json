@@ -1,0 +1,20 @@
+{
+  "device": {
+    "name": "KICKR",
+    "mac": null,
+    "uuid": null,
+    "scan_timeout_s": 10
+  },
+  "reconnect": {
+    "enabled": true,
+    "max_attempts": 0,
+    "backoff_s": [1, 2, 5, 10]
+  },
+  "ftms": {
+    "host": "127.0.0.1",
+    "port": 47610,
+    "max_rate_hz": 2,
+    "ack_timeout_s": 1.0,
+    "max_watts": null
+  }
+}
