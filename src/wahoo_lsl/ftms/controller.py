@@ -236,6 +236,8 @@ class Controller:
         try:
             await self._link.command(p.set_target_power(target))
         except CommandRejected as e:
+            if self.state.link != "ready" or self.state.link_epoch != epoch:
+                return  # superseded by a link loss; keep the "link lost" error
             self._rejections += 1
             self._set_error(f"set {target} W rejected: {e}")
             if self._rejections < MAX_REJECTIONS:
@@ -244,6 +246,8 @@ class Controller:
                 log.warning("Giving up on %d W after %d rejections; waiting for a new target", target, self._rejections)
             return
         except LinkError as e:
+            if self.state.link != "ready" or self.state.link_epoch != epoch:
+                return  # superseded by a link loss; keep the "link lost" error
             self._link_failures += 1
             self._set_error(f"set {target} W failed: {e}")
             if self._link_failures >= MAX_LINK_FAILURES:

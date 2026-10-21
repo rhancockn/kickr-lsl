@@ -401,3 +401,28 @@ def test_close_cancels_inflight_and_spins_down():
     assert watts(link) == [100, 0]
     assert link.closes == 1
     assert ctl.state.link == "closed"
+
+
+@pytest.mark.parametrize("outcome", [LinkError("link closed"), CommandRejected(0x05, 0x04)])
+def test_inflight_failure_after_link_lost_keeps_link_lost_error(outcome):
+    ctl, link, _ = make()
+
+    async def scenario():
+        await ctl.start()
+        stop = asyncio.Event()
+        task = asyncio.create_task(ctl.run(stop))
+        gate = asyncio.get_running_loop().create_future()
+        link.command_results = [gate]
+        ctl.request_target(100)
+        await until(lambda: len(link.sent) == 1)
+        link.on_link_lost("connection lost")
+        gate.set_result(outcome)  # the in-flight set fails after the link dropped
+        await until(lambda: ctl.state.link_epoch == 2)
+        await asyncio.sleep(0.01)
+        err = ctl.state.last_error
+        stop.set()
+        await task
+        await ctl.close()
+        return err
+
+    assert asyncio.run(scenario()).startswith("link lost: connection lost")
