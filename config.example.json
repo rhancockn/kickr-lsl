@@ -1,0 +1,19 @@
+{
+  "device": {
+    "name": "KICKR",
+    "mac": null,
+    "uuid": null,
+    "scan_timeout_s": 10
+  },
+  "measurements": ["power", "wheel_revolutions", "accumulated_torque"],
+  "log": {
+    "path": "logs/cps_{start:%Y%m%d_%H%M%S}.jsonl",
+    "flush_every_n": 10
+  },
+  "reconnect": {
+    "enabled": true,
+    "max_attempts": 0,
+    "backoff_s": [1, 2, 5, 10]
+  },
+  "queue_warn_depth": 100
+}
