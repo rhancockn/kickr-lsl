@@ -25,11 +25,15 @@ macOS: the terminal app needs Bluetooth permission (System Settings → Privacy 
 ## Usage
 
 ```bash
-conda run -n wahoo wahoo-lsl scan                                   # find nearby CPS devices
-conda run -n wahoo wahoo-lsl list-features -c config.json           # print supported features and measurements
-conda run -n wahoo wahoo-lsl run -c config.json                     # stream + log until Ctrl-C
-conda run -n wahoo wahoo-lsl run -c config.json --debug             # also print each sample, verbose logging
+conda activate wahoo
+wahoo-lsl scan                                   # find nearby CPS devices
+wahoo-lsl list-features -c config.json           # print supported features and measurements
+wahoo-lsl run -c config.json                     # stream + log until Ctrl-C
+wahoo-lsl run -c config.json --debug             # also print each sample, verbose logging
 ```
+
+Do not use `conda run` for these: it buffers all output until the command exits (no live warnings or `--debug` lines),
+and Ctrl-C under it is reported as a conda error with exit code 1 instead of a clean stop.
 
 Copy `config.example.json` to `config.json` and edit. The same config works on every platform:
 `device.uuid` is used on macOS (CoreBluetooth hides MAC addresses), `device.mac` on Windows/Linux;
@@ -78,5 +82,5 @@ Run on each platform (macOS, Windows, Linux) with the same config, filling in on
 2. `list-features` shows the device, sensor location, feature bits, and marks configured measurements available/UNAVAILABLE.
 3. `run` for 2 minutes while pedalling: samples at the device rate, `seq` contiguous, `t_lsl` increasing.
 4. Power-cycle the KICKR mid-run: a "Connection ... lost" warning, `disconnected` → `reconnect_attempt` → `connected` → `reconnected` events in the log, `seq` continues.
-5. Ctrl-C: clean exit (code 0), last line of the log is a `stopped` event.
+5. Ctrl-C (in an activated `wahoo` shell, not via `conda run`): clean exit (code 0, check with `echo $?`), last line of the log is a `stopped` event.
 6. `run --debug`: each sample printed to stdout.

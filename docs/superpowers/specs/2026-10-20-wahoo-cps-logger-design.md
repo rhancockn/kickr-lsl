@@ -294,7 +294,7 @@ class RawSample:
 @dataclass(frozen=True, slots=True)
 class Event:
     kind: str           # "clock_sync" | "connected" | "disconnected" | "reconnect_attempt"
-                        # | "reconnected" | "features" | "measurement_unavailable" | "stopped"
+                        # | "reconnected" | "features" | "stopped"
     t_lsl: float
     t_wall_ns: int
     detail: dict
