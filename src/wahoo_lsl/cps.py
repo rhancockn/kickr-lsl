@@ -151,3 +151,86 @@ def _parse_body(r: _Reader, flags: int) -> Measurement:
     if r.remaining:
         values["_trailing_bytes"] = r.remaining
     return Measurement(flags, values, frozenset(present))
+
+
+# CP Feature (0x2A65) named single bits (spec §6.4). Bits 20–21 are a 2-bit value.
+FEATURE_BITS: dict[int, str] = {
+    0: "pedal_power_balance",
+    1: "accumulated_torque",
+    2: "wheel_revolution_data",
+    3: "crank_revolution_data",
+    4: "extreme_magnitudes",
+    5: "extreme_angles",
+    6: "dead_spot_angles",
+    7: "accumulated_energy",
+    8: "offset_compensation_indicator",
+    9: "offset_compensation",
+    10: "content_masking",
+    11: "multiple_sensor_locations",
+    12: "crank_length_adjustment",
+    13: "chain_length_adjustment",
+    14: "chain_weight_adjustment",
+    15: "span_length_adjustment",
+    16: "sensor_measurement_context",
+    17: "instantaneous_measurement_direction",
+    18: "factory_calibration_date",
+    19: "enhanced_offset_compensation",
+}
+DISTRIBUTED_SYSTEM_SUPPORT = "distributed_system_support"
+_TORQUE_CONTEXT_BIT = 16  # 0 = force-based, 1 = torque-based
+
+
+@dataclass(frozen=True)
+class Features:
+    raw: int
+    flags: dict[str, bool | int]  # every FEATURE_BITS name -> bool, plus distributed_system_support -> int 0–3
+    supported: frozenset[str]  # measurement names from MEASUREMENTS; always includes "power"
+
+
+def parse_features(data: bytes | bytearray) -> Features:
+    """Decode the 32-bit CP Feature characteristic. Extra bytes are ignored."""
+    data = bytes(data)
+    if len(data) < 4:
+        raise ParseError(f"CP Feature needs 4 bytes, got {len(data)}")
+    (raw,) = struct.unpack_from("<I", data)
+    flags: dict[str, bool | int] = {name: bool((raw >> bit) & 1) for bit, name in FEATURE_BITS.items()}
+    flags[DISTRIBUTED_SYSTEM_SUPPORT] = (raw >> 20) & 0b11
+    torque_based = bool((raw >> _TORQUE_CONTEXT_BIT) & 1)
+    supported: set[str] = set()
+    for spec in MEASUREMENTS.values():
+        if spec.feature_bit is None:
+            supported.add(spec.name)
+            continue
+        if not (raw >> spec.feature_bit) & 1:
+            continue
+        if spec.name == "extreme_force" and torque_based:
+            continue
+        if spec.name == "extreme_torque" and not torque_based:
+            continue
+        supported.add(spec.name)
+    return Features(raw, flags, frozenset(supported))
+
+
+SENSOR_LOCATIONS: tuple[str, ...] = (
+    "Other",
+    "Top of shoe",
+    "In shoe",
+    "Hip",
+    "Front wheel",
+    "Left crank",
+    "Right crank",
+    "Left pedal",
+    "Right pedal",
+    "Front hub",
+    "Rear dropout",
+    "Chainstay",
+    "Rear wheel",
+    "Rear hub",
+    "Chest",
+    "Spider",
+    "Chain ring",
+)
+
+
+def sensor_location_name(code: int) -> str:
+    return SENSOR_LOCATIONS[code] if 0 <= code < len(SENSOR_LOCATIONS) else f"Unknown({code})"

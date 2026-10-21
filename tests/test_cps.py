@@ -215,3 +215,67 @@ def test_vocabulary_keys_match_parser_output():
     m = parse_measurement(data)
     assert set(m.values) == {k for spec in MEASUREMENTS.values() for k in spec.keys}
     assert m.present == set(MEASUREMENTS)
+
+
+from wahoo_lsl.cps import FEATURE_BITS, parse_features, sensor_location_name  # noqa: E402
+
+
+def feat(raw: int) -> bytes:
+    return struct.pack("<I", raw)
+
+
+def test_features_none_supported_still_has_power():
+    f = parse_features(feat(0))
+    assert f.raw == 0
+    assert f.supported == {"power"}
+    assert f.flags["wheel_revolution_data"] is False
+    assert f.flags["distributed_system_support"] == 0
+
+
+def test_features_wheel_and_crank():
+    f = parse_features(feat(0b1100))
+    assert f.supported == {"power", "wheel_revolutions", "crank_revolutions"}
+    assert f.flags["crank_revolution_data"] is True
+
+
+def test_extreme_magnitudes_force_based_context():
+    assert parse_features(feat(1 << 4)).supported == {"power", "extreme_force"}
+
+
+def test_extreme_magnitudes_torque_based_context():
+    f = parse_features(feat((1 << 4) | (1 << 16)))
+    assert f.supported == {"power", "extreme_torque"}
+    assert f.flags["sensor_measurement_context"] is True
+
+
+def test_feature_bit_mapping_for_each_measurement():
+    for spec in MEASUREMENTS.values():
+        if spec.feature_bit is None or spec.name == "extreme_torque":
+            continue
+        assert spec.name in parse_features(feat(1 << spec.feature_bit)).supported
+
+
+def test_all_named_bits_decoded():
+    f = parse_features(feat(0x000FFFFF))
+    assert all(f.flags[name] is True for name in FEATURE_BITS.values())
+
+
+def test_distributed_system_support_two_bit_value():
+    assert parse_features(feat(2 << 20)).flags["distributed_system_support"] == 2
+    assert parse_features(feat(3 << 20)).flags["distributed_system_support"] == 3
+
+
+def test_features_short_payload():
+    with pytest.raises(ParseError):
+        parse_features(b"\x01\x02\x03")
+
+
+def test_features_extra_bytes_ignored():
+    assert "wheel_revolutions" in parse_features(feat(0b100) + b"\xff").supported
+
+
+def test_sensor_location_names():
+    assert sensor_location_name(0) == "Other"
+    assert sensor_location_name(13) == "Rear hub"
+    assert sensor_location_name(16) == "Chain ring"
+    assert sensor_location_name(17) == "Unknown(17)"
