@@ -1,3 +1,4 @@
+import fractions
 import socket
 import subprocess
 import sys
@@ -147,15 +148,27 @@ def test_non_json_reply_breaks_client():
         srv.server_close()
 
 
-def test_index_like_watts_sent_as_int_and_float_rejected():
+def test_numeric_watts_accepted_and_rounded():
     class NpInt:
         def __index__(self):
             return 120
 
     with StubService(default_reply) as svc, KickrClient(port=svc.port) as client:
         assert client.set_target_power(NpInt()) == 120
-        assert svc.requests[0] == {"cmd": "set", "watts": 120}
-        with pytest.raises(TypeError):
-            client.set_target_power(120.0)
-        assert client.read().link == "ready"  # still usable; nothing was sent for the float
-        assert len(svc.requests) == 2
+        assert client.set_target_power(150.6) == 151
+        assert client.set_target_power(fractions.Fraction(301, 2)) == 150  # any numbers.Real; half to even
+        assert [r["watts"] for r in svc.requests] == [120, 151, 150]
+        assert all(type(r["watts"]) is int for r in svc.requests)
+
+
+@pytest.mark.parametrize(
+    "value, error",
+    [(True, TypeError), (False, TypeError), ("150", TypeError), (None, TypeError), (1 + 2j, TypeError),
+     (float("nan"), ValueError), (float("inf"), ValueError)],
+)
+def test_non_numeric_watts_rejected_without_sending(value, error):
+    with StubService(default_reply) as svc, KickrClient(port=svc.port) as client:
+        with pytest.raises(error):
+            client.set_target_power(value)
+        assert client.read().link == "ready"  # still usable; nothing was sent
+        assert [r["cmd"] for r in svc.requests] == ["read"]

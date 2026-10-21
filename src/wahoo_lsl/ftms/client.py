@@ -9,6 +9,8 @@ exiting) makes the service spin the trainer down to 0 W.
 from __future__ import annotations
 
 import json
+import math
+import numbers
 import operator
 import socket
 from typing import Any, NamedTuple
@@ -47,6 +49,20 @@ class Status(NamedTuple):
     last_error_t_lsl: float | None
 
 
+
+def _whole_watts(value: Any) -> int:
+    if isinstance(value, bool):
+        raise TypeError("watts must be a number, not bool")
+    try:
+        return operator.index(value)  # int and integer types such as numpy.int64
+    except TypeError:
+        pass
+    if not isinstance(value, numbers.Real):
+        raise TypeError(f"watts must be a real number, got {type(value).__name__}")
+    if not math.isfinite(value):
+        raise ValueError(f"watts must be finite, got {value!r}")
+    return round(value)
+
 class KickrClient:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout_s: float = 2.0) -> None:
         self._closed = True  # until fully constructed
@@ -59,10 +75,13 @@ class KickrClient:
             raise
         self._closed = False
 
-    def set_target_power(self, watts: int) -> int:
-        """Request a target; returns the accepted (possibly clamped) value immediately."""
-        watts = operator.index(watts)  # accepts numpy integers; rejects floats with TypeError
-        return self._request({"cmd": "set", "watts": watts}, lambda r: int(r["target_w"]))
+    def set_target_power(self, watts: float) -> int:
+        """Request a target; returns the accepted (rounded, possibly clamped) value immediately.
+
+        Any real number is accepted (int, float, numpy scalars) and rounded to whole watts.
+        bool, non-numbers (TypeError) and NaN/infinity (ValueError) are rejected without sending.
+        """
+        return self._request({"cmd": "set", "watts": _whole_watts(watts)}, lambda r: int(r["target_w"]))
 
     def read(self) -> Status:
         return self._request({"cmd": "read"}, _parse_status)

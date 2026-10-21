@@ -365,10 +365,11 @@ Triggers:
 ### 7.7 Shutdown order
 
 1. Stop accepting connections; close the active client connection.
-2. `spin_down("shutdown")`.
+2. `spin_down("shutdown")`, up to 3 attempts 0.2 s apart (nothing retries after shutdown); if all
+   fail, log an ERROR that the trainer may still hold its last target.
 3. `link.close()` (stop notifications, disconnect; each step bounded by `SHUTDOWN_TIMEOUT_S`).
    Disconnecting releases FTMS control.
-Total shutdown bounded at ~10 s.
+Shutdown is bounded: at most 3 × 2 s for spin-down plus 5 s per unsubscribe/disconnect step.
 
 ## 8. TCP protocol (`ftms/server.py`)
 
@@ -416,7 +417,9 @@ class Status(NamedTuple): link: str; link_epoch: int; target: TargetState; power
 
 class KickrClient:
     def __init__(self, host="127.0.0.1", port=47610, timeout_s=2.0)  # connects (TCP_NODELAY)
-    def set_target_power(self, watts: int) -> int     # returns accepted (clamped) value
+    def set_target_power(self, watts: float) -> int   # any real number, rounded to whole W; bool/non-numbers
+                                                      # -> TypeError, NaN/inf -> ValueError (nothing sent);
+                                                      # returns accepted (clamped) value
     def read_target_power(self) -> TargetState
     def read_power(self) -> PowerReading
     def read(self) -> Status

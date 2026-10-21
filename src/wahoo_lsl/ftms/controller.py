@@ -20,6 +20,8 @@ from .link import CommandRejected, LinkError
 log = logging.getLogger(__name__)
 
 SPIN_DOWN_TIMEOUT_S = 2.0
+SHUTDOWN_SPIN_DOWN_ATTEMPTS = 3  # at shutdown nothing retries later, so try a few times before releasing the link
+SHUTDOWN_RETRY_DELAY_S = 0.2
 MAX_LINK_FAILURES = 3  # consecutive LinkErrors from the sender -> treat the link as lost
 MAX_REJECTIONS = 3  # rejected sends of one requested target before giving up on it
 
@@ -115,11 +117,21 @@ class Controller:
             await self._reconnect(policy, stop)
 
     async def close(self, reason: str = "shutdown") -> None:
-        """Stop the sender, spin down to 0 W, release the link. Bounded; never raises."""
+        """Stop the sender, spin down to 0 W (bounded retries), release the link. Bounded; never raises."""
         if self._sender_task is not None:
             self._sender_task.cancel()
             await asyncio.gather(self._sender_task, return_exceptions=True)
-        await self.spin_down(reason)
+        for attempt in range(1, SHUTDOWN_SPIN_DOWN_ATTEMPTS + 1):
+            if await self.spin_down(reason) or self.state.link != "ready":
+                break
+            if attempt == SHUTDOWN_SPIN_DOWN_ATTEMPTS:
+                log.error(
+                    "spin-down (%s) failed %d times; the trainer may still hold its last target",
+                    reason,
+                    attempt,
+                )
+            else:
+                await self._sleep(SHUTDOWN_RETRY_DELAY_S)
         self.state.link = "closed"
         try:
             await self._link.close()

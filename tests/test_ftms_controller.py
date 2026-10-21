@@ -1,11 +1,12 @@
 import asyncio
+import logging
 import struct
 
 import pytest
 
 from wahoo_lsl.ble import ReconnectExhausted
 from wahoo_lsl.ftms.config import parse_ftms_config
-from wahoo_lsl.ftms.controller import Controller, LinkDown
+from wahoo_lsl.ftms.controller import SHUTDOWN_SPIN_DOWN_ATTEMPTS, Controller, LinkDown
 from wahoo_lsl.ftms.link import CommandRejected, CommandTimeout, FtmsSetupError, LinkError
 from wahoo_lsl.ftms.protocol import BikeData, CpResponse, PowerRange, StatusEvent
 
@@ -401,6 +402,54 @@ def test_close_cancels_inflight_and_spins_down():
     assert watts(link) == [100, 0]
     assert link.closes == 1
     assert ctl.state.link == "closed"
+
+
+def test_close_retries_failed_spin_down(caplog):
+    ctl, link, _ = make()
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(150)
+        await until(lambda: ctl.state.confirmed_w == 150)
+        link.command_results = [LinkError("lost indication"), CommandTimeout("no response")]
+        await asyncio.wait_for(ctl.close(), 1.0)
+
+    with caplog.at_level(logging.INFO):
+        asyncio.run(scenario())
+    assert watts(link) == [150, 0, 0, 0]  # two failures, third attempt confirmed
+    assert link.closes == 1
+    assert any("spin-down (shutdown): 0 W confirmed" in r.getMessage() for r in caplog.records)
+
+
+def test_close_gives_up_after_bounded_spin_down_attempts(caplog):
+    ctl, link, _ = make()
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(150)
+        await until(lambda: ctl.state.confirmed_w == 150)
+        link.command_results = [LinkError("gone")] * 10
+        await asyncio.wait_for(ctl.close(), 1.0)
+
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(scenario())
+    assert watts(link) == [150] + [0] * SHUTDOWN_SPIN_DOWN_ATTEMPTS
+    assert link.closes == 1
+    assert ctl.state.link == "closed"
+    assert any("may still hold" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+
+
+def test_close_does_not_retry_when_link_not_ready():
+    ctl, link, _ = make()
+
+    async def scenario():
+        await ctl.start()
+        link.on_link_lost("connection lost")
+        await asyncio.wait_for(ctl.close(), 1.0)
+
+    asyncio.run(scenario())
+    assert link.sent == []
+    assert link.closes == 1
 
 
 @pytest.mark.parametrize("outcome", [LinkError("link closed"), CommandRejected(0x05, 0x04)])
