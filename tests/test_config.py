@@ -96,6 +96,7 @@ def test_measurements_optional_when_not_required():
         (_set("log.path", "logs/{foo}.jsonl"), "log.path"),
         (_set("log.path", "logs/{start.nope}.jsonl"), "log.path"),
         (_set("log.path", "logs/{.jsonl"), "log.path"),
+        (_set("log.path", "logs/{start[0]}.jsonl"), "log.path"),
         (_set("log.flush_every_n", 0), "flush_every_n"),
         (_set("reconnect.enabled", "yes"), "reconnect.enabled"),
         (_set("reconnect.max_attempts", -1), "max_attempts"),

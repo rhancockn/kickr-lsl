@@ -177,7 +177,7 @@ def _parse_log(lg: dict) -> LogConfig:
         raise ConfigError("log.path must be a non-empty string")
     try:
         path.format(start=datetime.now())
-    except (KeyError, IndexError, ValueError, AttributeError) as e:
+    except (KeyError, IndexError, ValueError, AttributeError, TypeError) as e:
         raise ConfigError(f"log.path template is invalid ({e!r}); only {{start:<strftime>}} is supported") from None
     return LogConfig(path=path, flush_every_n=_int(lg.get("flush_every_n", 10), "log.flush_every_n", minimum=1))
 
