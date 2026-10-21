@@ -31,6 +31,9 @@ log = logging.getLogger(__name__)
 # Errors bleak or the OS may raise during BLE operations on any backend.
 COMMS_ERRORS = (BleakError, asyncio.TimeoutError, OSError)
 
+# Upper bound for each of stop_notify / disconnect at shutdown (CoreBluetooth disconnect has no timeout).
+SHUTDOWN_TIMEOUT_S = 5.0
+
 
 class BleSetupError(Exception):
     """Could not find, connect to, or read the device. CLI exit code 3."""
@@ -181,7 +184,7 @@ class CpsClient:
             await client.connect()
             service = client.services.get_service(CPS_SERVICE_UUID)
             if service is None:
-                raise NoCpsService(f"{getattr(device, 'name', device)} does not expose the Cycling Power Service")
+                raise NoCpsService(f"{getattr(device, 'name', None) or getattr(device, 'address', device)} does not expose the Cycling Power Service")
             # Resolve on the service, not the collection: other services (e.g. CSC) may repeat a UUID.
             feature_char = service.get_characteristic(CP_FEATURE_UUID)
             if feature_char is None:
@@ -239,7 +242,7 @@ class CpsClient:
                 ("unavailable", name),
                 "Measurement '%s' is not supported by %s (CP Feature 0x%08x); continuing without it",
                 name,
-                info.name,
+                info.name or info.address,
                 info.features.raw,
             )
         self._emit(
@@ -264,8 +267,10 @@ class CpsClient:
         self._disconnected = asyncio.Event()
         policy = ReconnectPolicy(self._cfg.reconnect.backoff_s, self._cfg.reconnect.max_attempts)
         try:
-            info = await self._open_session()
-            log.info("Streaming from %s (%s %s)", info.name, info.address_kind, info.address)
+            info = await _unless_stopped(self._open_session(), stop_requested)
+            if info is None:
+                return  # stopped while scanning/connecting
+            log.info("Streaming from %s (%s %s)", info.name or info.address, info.address_kind, info.address)
             while True:
                 await _wait_first(stop_requested, self._disconnected)
                 if stop_requested.is_set():
@@ -287,7 +292,7 @@ class CpsClient:
         if client is not self._client:
             return  # intentional disconnect (we cleared _client first) or a stale client
         info = self._info
-        log.warning("Connection to %s lost", info.name if info else "device")
+        log.warning("Connection to %s lost", (info.name or info.address) if info else "device")
         self._emit(
             make_event(
                 "disconnected",
@@ -311,14 +316,16 @@ class CpsClient:
             assert self._disconnected is not None
             self._disconnected.clear()
             try:
-                info = await self._open_session()
+                info = await _unless_stopped(self._open_session(), stop_requested)
+                if info is None:
+                    return  # stopped mid-attempt; run() sees the stop and returns
             except BleSetupError as e:
                 failures += 1
                 log.warning("Reconnect attempt %d failed: %s", attempt, e)
                 if policy.exhausted(failures):
                     raise ReconnectExhausted(f"gave up after {failures} failed reconnect attempt(s)") from e
                 continue
-            log.info("Reconnected to %s", info.name)
+            log.info("Reconnected to %s", info.name or info.address)
             self._emit(make_event("reconnected", attempt=attempt, name=info.name, address=info.address))
             return
 
@@ -326,19 +333,17 @@ class CpsClient:
         client = self._client
         if client is not None and getattr(client, "is_connected", False):
             try:
-                await client.stop_notify(self._measurement_char)
-            except Exception as e:
-                log.debug("stop_notify failed during shutdown: %s", e)
-        await self._safe_disconnect()
+                await _bounded(client.stop_notify(self._measurement_char), "stop_notify")
+            finally:
+                await self._safe_disconnect()
+        else:
+            await self._safe_disconnect()
 
     async def _safe_disconnect(self) -> None:
         client, self._client = self._client, None  # clear first so the callback ignores this disconnect
         if client is None:
             return
-        try:
-            await client.disconnect()
-        except Exception as e:
-            log.debug("disconnect failed: %s", e)
+        await _bounded(client.disconnect(), "disconnect")
 
 
 async def _wait_first(*events: asyncio.Event) -> None:
@@ -358,3 +363,28 @@ async def _sleep_unless(stop: asyncio.Event, seconds: float) -> bool:
         return True
     except asyncio.TimeoutError:
         return False
+
+
+async def _bounded(coro: Any, what: str) -> None:
+    """Await a shutdown step for at most SHUTDOWN_TIMEOUT_S; log and carry on if it fails or hangs."""
+    try:
+        await asyncio.wait_for(coro, SHUTDOWN_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        log.warning("%s timed out after %.1fs during shutdown; continuing", what, SHUTDOWN_TIMEOUT_S)
+    except Exception as e:
+        log.debug("%s failed during shutdown: %s", what, e)
+
+
+async def _unless_stopped(coro: Any, stop: asyncio.Event) -> Any:
+    """Await ``coro`` but give up (cancelling it, result None) as soon as ``stop`` is set."""
+    task = asyncio.ensure_future(coro)
+    stop_task = asyncio.ensure_future(stop.wait())
+    try:
+        await asyncio.wait({task, stop_task}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        return None
+    finally:
+        for t in (task, stop_task):
+            t.cancel()
+        await asyncio.gather(task, stop_task, return_exceptions=True)

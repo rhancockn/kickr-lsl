@@ -45,6 +45,8 @@ class FakeClient:
         self.notify_callback = None
 
     async def connect(self) -> None:
+        if self.backend.connect_delay:
+            await asyncio.sleep(self.backend.connect_delay)
         if self.backend.connect_failures > 0:
             self.backend.connect_failures -= 1
             raise OSError("simulated connect failure")
@@ -67,9 +69,13 @@ class FakeClient:
             asyncio.get_running_loop().call_soon(self._play, payloads, drop_after)
 
     async def stop_notify(self, char) -> None:
+        if self.backend.hang_stop_notify:
+            await asyncio.Event().wait()
         self.notify_callback = None
 
     async def disconnect(self) -> None:
+        if self.backend.hang_disconnect:
+            await asyncio.Event().wait()
         was_connected = self.is_connected
         self.is_connected = False
         if was_connected:
@@ -97,6 +103,11 @@ class FakeBackend:
         connect_failures: int = 0,
         fail_start_notify: bool = False,
         sessions=None,
+        discover_delay: float = 0,
+        connect_delay: float = 0,
+        hang_stop_notify: bool = False,
+        hang_disconnect: bool = False,
+        on_discover=None,
     ) -> None:
         if scan_results is None:
             scan_results = [ScanResult(KICKR.name, KICKR.address, -50, True, KICKR)]
@@ -107,10 +118,19 @@ class FakeBackend:
         self.fail_start_notify = fail_start_notify
         # Each session: (payloads to notify right after subscribe, drop link afterwards?)
         self.sessions = list(sessions or [])
+        self.discover_delay = discover_delay
+        self.connect_delay = connect_delay
+        self.hang_stop_notify = hang_stop_notify
+        self.hang_disconnect = hang_disconnect
+        self.on_discover = on_discover  # called when a scan starts (lets tests sync a signal)
         self.clients: list[FakeClient] = []
         self.address_lookups: list[str] = []
 
     async def discover(self, timeout: float):
+        if self.on_discover:
+            self.on_discover()
+        if self.discover_delay:
+            await asyncio.sleep(self.discover_delay)
         return list(self.scan_results)
 
     async def find_by_address(self, address: str, timeout: float):

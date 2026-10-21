@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from fakes import ALWAYS, KICKR, FakeBackend
 
+import wahoo_lsl.ble as ble_mod
 from wahoo_lsl.ble import (
     AmbiguousDevice,
     BleSetupError,
@@ -298,3 +299,103 @@ def test_scan_cps_filters_to_cps_or_kickr():
     )
     names = [r.name for r in asyncio.run(scan_cps(1.0, backend))]
     assert names == ["Foo", "KICKR BIKE"]
+
+
+def _run_with_early_stop(backend, cfg=None, setup_wait=0.1):
+    """Start run(), set stop after ``setup_wait`` s, return seconds run() took to return."""
+    client, items = make_client(backend, cfg)
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(client.run(stop))
+        await asyncio.sleep(setup_wait)
+        stop.set()
+        t0 = asyncio.get_running_loop().time()
+        await asyncio.wait_for(task, timeout=1.0)
+        return asyncio.get_running_loop().time() - t0
+
+    return asyncio.run(scenario())
+
+
+def test_stop_during_slow_discover_returns_promptly():
+    backend = FakeBackend(discover_delay=5)
+    assert _run_with_early_stop(backend) < 1.0
+    assert all(not c.is_connected for c in backend.clients)
+
+
+def test_stop_during_slow_connect_returns_promptly():
+    backend = FakeBackend(connect_delay=5)
+    assert _run_with_early_stop(backend) < 1.0
+    assert backend.clients and all(not c.is_connected for c in backend.clients)
+
+
+def test_stop_during_final_failing_reconnect_returns_normally():
+    backend = FakeBackend()
+    client, items = make_client(backend, make_cfg(reconnect={"max_attempts": 1}))
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(client.run(stop))
+        await until(lambda: backend.clients and backend.clients[0].notify_callback is not None)
+        backend.connect_delay = 5
+        backend.connect_failures = ALWAYS
+        backend.clients[0].drop()
+        await until(lambda: "reconnect_attempt" in kinds(items))
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(scenario())  # no ReconnectExhausted
+    assert all(not c.is_connected for c in backend.clients)
+
+
+def test_shutdown_is_bounded_when_stop_notify_and_disconnect_hang(monkeypatch, caplog):
+    monkeypatch.setattr(ble_mod, "SHUTDOWN_TIMEOUT_S", 0.05, raising=False)
+    backend = FakeBackend()
+    client, _ = make_client(backend)
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(client.run(stop))
+        await until(lambda: backend.clients and backend.clients[0].notify_callback is not None)
+        backend.hang_stop_notify = True
+        backend.hang_disconnect = True
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(scenario())
+    assert sum("timed out" in w for w in warnings(caplog)) == 2
+
+
+def test_shutdown_still_disconnects_after_stop_notify_times_out(monkeypatch):
+    monkeypatch.setattr(ble_mod, "SHUTDOWN_TIMEOUT_S", 0.05, raising=False)
+    backend = FakeBackend()
+    client, _ = make_client(backend)
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(client.run(stop))
+        await until(lambda: backend.clients and backend.clients[0].notify_callback is not None)
+        backend.hang_stop_notify = True
+        stop.set()
+        await asyncio.wait_for(task, timeout=1.0)
+
+    asyncio.run(scenario())
+    assert backend.clients[0].is_connected is False
+
+
+def test_connection_lost_message_falls_back_to_address(caplog):
+    nameless = SimpleNamespace(name=None, address="AA:BB:CC:DD:EE:07")
+    backend = FakeBackend([ScanResult("KICKR", nameless.address, -50, True, nameless)])
+    client, _ = make_client(backend, make_cfg(reconnect={"enabled": False}))
+
+    async def scenario():
+        task = asyncio.create_task(client.run(asyncio.Event()))
+        await until(lambda: backend.clients and backend.clients[0].notify_callback is not None)
+        backend.clients[0].drop()
+        with pytest.raises(ReconnectExhausted):
+            await task
+
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(scenario())
+    assert "Connection to AA:BB:CC:DD:EE:07 lost" in warnings(caplog)
