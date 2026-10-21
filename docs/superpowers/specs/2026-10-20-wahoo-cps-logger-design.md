@@ -37,7 +37,7 @@ added as one more sink without changing the BLE or parsing code.
 
 ## 2. Platform & dependencies
 
-- Python ≥ 3.10, managed with `uv`, `src/` layout, console script `wahoo-lsl`.
+- Python ≥ 3.10, existing `wahoo` conda environment (captured in `environment.yml` + `requirements*.txt`), `src/` layout, console script `wahoo-lsl`.
 - Runtime deps: `bleak` (BLE, all three platforms), `pylsl` (clock now, LSL later).
 - Dev deps: `pytest`.
 - **No OS-specific code paths except where explicitly listed** (section 9). Every OS

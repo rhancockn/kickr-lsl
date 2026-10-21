@@ -6,7 +6,7 @@
 
 **Architecture:** asyncio/bleak on the main thread; the notify callback only stamps `pylsl.local_clock()` + `time.time_ns()`, assigns a sequence number and enqueues raw bytes. A dispatcher thread parses (pure `cps.py`), applies warn-once availability checks, and fans immutable `Sample`/`Event` objects out to one queue + thread per sink (JSONL log, debug console).
 
-**Tech Stack:** Python ≥ 3.10, `uv`, `bleak` (≥ 1.0, verified with 3.0.2), `pylsl` (≥ 1.17, verified with 1.18.6, bundles liblsl), `pytest`.
+**Tech Stack:** Python ≥ 3.10 (the existing `wahoo` conda env runs 3.12.0), `bleak` (≥ 1.0, verified with 3.0.2), `pylsl` (≥ 1.17, verified with 1.18.6, bundles liblsl), `pytest`.
 
 **Spec:** `docs/superpowers/specs/2026-10-20-wahoo-cps-logger-design.md` — read it before starting any task.
 
@@ -21,7 +21,8 @@
 - Every parsed field is logged; `measurements` in the config drives availability warnings only (no output filtering in MVP).
 - `cps.py` has no I/O, no bleak, no threading.
 - Exit codes: 0 ok, 1 unexpected error, 2 config error (incl. unwritable log path), 3 device/connection setup error, 4 reconnect exhausted/disabled after link loss, 130 Ctrl-C during `scan`/`list-features`.
-- Tests must not require BLE hardware. Run everything with `uv run pytest`.
+- Use the existing **`wahoo` conda environment** (do NOT use uv, venv, or create a new env). Run every command through `conda run -n wahoo ...` (non-interactive shells can't `conda activate`). Install with `conda run -n wahoo python -m pip ...` only.
+- Tests must not require BLE hardware. Run everything with `conda run -n wahoo python -m pytest`.
 - Commit after every task with the message given; end every commit message with the line `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
 
 Clarifications relative to the spec (intentional, keep them):
@@ -39,7 +40,10 @@ Clarifications relative to the spec (intentional, keep them):
 ## File Structure
 
 ```
-pyproject.toml                 # Task 1
+pyproject.toml                 # Task 1  — package metadata + console script
+environment.yml                # Task 1  — conda env spec (recreates `wahoo`)
+requirements.txt               # Task 1  — runtime pip deps
+requirements-dev.txt           # Task 1  — + pytest
 .gitignore                     # Task 1
 config.example.json            # Task 4
 README.md                      # Task 8
@@ -55,7 +59,7 @@ src/wahoo_lsl/sinks/log_sink.py      # Task 6
 src/wahoo_lsl/sinks/console_sink.py  # Task 6
 src/wahoo_lsl/ble.py           # Task 7  — bleak wrapper, reconnect
 src/wahoo_lsl/cli.py           # Task 8  — argparse, wiring
-tests/test_clock.py tests/test_warn.py       # Task 1
+tests/test_env.py tests/test_clock.py tests/test_warn.py  # Task 1
 tests/test_cps.py                            # Tasks 2–3
 tests/test_config.py                         # Task 4
 tests/test_pipeline.py                       # Task 5
@@ -66,19 +70,47 @@ tests/test_cli.py                            # Task 8
 
 ---
 
-### Task 1: Project scaffold, clock, WarnOnce
+### Task 1: Environment/requirements setup, clock, WarnOnce
 
 **Files:**
-- Create: `pyproject.toml`, `.gitignore`, `src/wahoo_lsl/__init__.py`, `src/wahoo_lsl/clock.py`, `src/wahoo_lsl/warn.py`
-- Test: `tests/test_clock.py`, `tests/test_warn.py`
+- Create: `environment.yml`, `requirements.txt`, `requirements-dev.txt`, `pyproject.toml`, `.gitignore`, `src/wahoo_lsl/__init__.py`, `src/wahoo_lsl/clock.py`, `src/wahoo_lsl/warn.py`
+- Test: `tests/test_env.py`, `tests/test_clock.py`, `tests/test_warn.py`
 
 **Interfaces:**
-- Consumes: nothing.
+- Consumes: the existing `wahoo` conda env.
 - Produces:
+  - Installed editable package `wahoo_lsl` + `wahoo-lsl` console script in the `wahoo` env
   - `clock.now_lsl() -> float`, `clock.now_wall_ns() -> int`, `clock.wall_iso(ns: int) -> str`
   - `warn.WarnOnce(logger: logging.Logger)` with `.check(key) -> bool`, `.warn(key, msg: str, *args) -> bool`, `.counts() -> dict`
 
-- [ ] **Step 1: Create project files**
+- [ ] **Step 1: Capture the environment and requirements**
+
+The `wahoo` conda env already exists (Python 3.12.0, bleak 3.0.2, pylsl 1.18.6 with bundled liblsl, pyobjc on macOS). These files record it so it can be recreated on Windows/Linux; bleak pulls in its own platform backend (pyobjc / winrt / dbus-fast) automatically.
+
+**`requirements.txt`** (create):
+```
+bleak>=1.0
+pylsl>=1.17
+```
+
+**`requirements-dev.txt`** (create):
+```
+-r requirements.txt
+pytest>=8
+```
+
+**`environment.yml`** (create):
+```yaml
+# Recreate with: conda env create -f environment.yml   (then: conda run -n wahoo python -m pip install -e .)
+name: wahoo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - pip:
+      - -r requirements-dev.txt
+```
 
 **`pyproject.toml`** (create):
 ```toml
@@ -92,18 +124,18 @@ dependencies = [
     "pylsl>=1.17",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [project.scripts]
 wahoo-lsl = "wahoo_lsl.cli:main"
 
-[dependency-groups]
-dev = ["pytest>=8"]
-
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["src/wahoo_lsl"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -111,10 +143,10 @@ testpaths = ["tests"]
 
 **`.gitignore`** (create):
 ```
-.venv/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+build/
 logs/
 ```
 
@@ -125,10 +157,42 @@ logs/
 __version__ = "0.1.0"
 ```
 
-Run: `uv sync`
-Expected: creates `.venv`, installs bleak, pylsl, pytest, and the package in editable mode.
+Run: `conda run -n wahoo python -m pip install -r requirements-dev.txt`
+Expected: bleak and pylsl reported as already satisfied; pytest installed.
+
+Run: `conda run -n wahoo python -m pip install -e .`
+Expected: `Successfully installed wahoo-lsl-0.1.0` (editable). The `wahoo-lsl` console script now exists in the env.
 
 - [ ] **Step 2: Write the failing tests**
+
+**`tests/test_env.py`** (create):
+```python
+"""Guards the captured environment: required packages importable at the minimum versions."""
+from importlib.metadata import version
+
+import bleak  # noqa: F401
+import pylsl
+
+import wahoo_lsl
+
+
+def _major_minor(v: str) -> tuple[int, int]:
+    major, minor = v.split(".")[:2]
+    return int(major), int(minor)
+
+
+def test_bleak_version():
+    assert _major_minor(version("bleak")) >= (1, 0)
+
+
+def test_pylsl_version_and_liblsl_loaded():
+    assert _major_minor(version("pylsl")) >= (1, 17)
+    assert pylsl.library_version() > 0  # liblsl shared library actually loads
+
+
+def test_package_installed():
+    assert wahoo_lsl.__version__ == "0.1.0"
+```
 
 **`tests/test_clock.py`** (create):
 ```python
@@ -216,8 +280,8 @@ def test_thread_safe_single_emit(caplog):
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_clock.py tests/test_warn.py -v`
-Expected: FAIL with `ImportError` / `ModuleNotFoundError` for `wahoo_lsl.clock` and `wahoo_lsl.warn`.
+Run: `conda run -n wahoo python -m pytest tests/test_env.py tests/test_clock.py tests/test_warn.py -v`
+Expected: FAIL with `ModuleNotFoundError` for `wahoo_lsl.clock` and `wahoo_lsl.warn`. (`tests/test_env.py` already passes: 3 passed.)
 
 - [ ] **Step 4: Implement**
 
@@ -290,14 +354,14 @@ class WarnOnce:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_clock.py tests/test_warn.py -v`
-Expected: 8 passed.
+Run: `conda run -n wahoo python -m pytest tests/test_env.py tests/test_clock.py tests/test_warn.py -v`
+Expected: 11 passed.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add pyproject.toml uv.lock .gitignore src tests
-git commit -m "feat: project scaffold, clock and WarnOnce"
+git add environment.yml requirements.txt requirements-dev.txt pyproject.toml .gitignore src tests
+git commit -m "feat: capture wahoo conda env/requirements; clock and WarnOnce"
 ```
 
 ---
@@ -543,7 +607,7 @@ def test_vocabulary_keys_match_parser_output():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_cps.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_cps.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.cps'`.
 
 - [ ] **Step 3: Implement**
@@ -707,7 +771,7 @@ def _parse_body(r: _Reader, flags: int) -> Measurement:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_cps.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_cps.py -v`
 Expected: all passed (32 tests).
 
 - [ ] **Step 5: Commit**
@@ -805,7 +869,7 @@ def test_sensor_location_names():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_cps.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_cps.py -v`
 Expected: FAIL with `ImportError: cannot import name 'FEATURE_BITS'`.
 
 - [ ] **Step 3: Implement**
@@ -899,7 +963,7 @@ def sensor_location_name(code: int) -> str:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_cps.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_cps.py -v`
 Expected: all passed (42 tests).
 
 - [ ] **Step 5: Commit**
@@ -1112,7 +1176,7 @@ def test_address_kind_defaults_to_sys_platform(monkeypatch):
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_config.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_config.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.config'`.
 
 - [ ] **Step 4: Implement**
@@ -1319,7 +1383,7 @@ def _parse_reconnect(rc: dict) -> ReconnectConfig:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_config.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_config.py -v`
 Expected: all passed.
 
 - [ ] **Step 6: Commit**
@@ -1556,7 +1620,7 @@ def test_make_event_reads_both_clocks():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_pipeline.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_pipeline.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.pipeline'`.
 
 - [ ] **Step 3: Implement**
@@ -1810,7 +1874,7 @@ class Pipeline:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_pipeline.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_pipeline.py -v`
 Expected: all passed.
 
 - [ ] **Step 5: Commit**
@@ -1947,7 +2011,7 @@ def test_console_sink_formats_samples_and_events():
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_sinks.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_sinks.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.sinks'`.
 
 - [ ] **Step 3: Implement**
@@ -2074,7 +2138,7 @@ class ConsoleSink(Sink):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_sinks.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_sinks.py -v`
 Expected: all passed.
 
 - [ ] **Step 5: Commit**
@@ -2524,7 +2588,7 @@ def test_scan_cps_filters_to_cps_or_kickr():
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_ble.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_ble.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.ble'` (raised while importing `fakes`).
 
 - [ ] **Step 4: Implement**
@@ -2884,8 +2948,8 @@ async def _sleep_unless(stop: asyncio.Event, seconds: float) -> bool:
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_ble.py -v`
-Expected: all passed. Then run the whole suite: `uv run pytest` — all passed.
+Run: `conda run -n wahoo python -m pytest tests/test_ble.py -v`
+Expected: all passed. Then run the whole suite: `conda run -n wahoo python -m pytest` — all passed.
 
 - [ ] **Step 6: Commit**
 
@@ -3067,7 +3131,7 @@ def test_run_session_unwritable_log_path(tmp_path):
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_cli.py -v`
+Run: `conda run -n wahoo python -m pytest tests/test_cli.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.cli'`.
 
 - [ ] **Step 3: Implement**
@@ -3276,9 +3340,16 @@ Design: `docs/superpowers/specs/2026-10-20-wahoo-cps-logger-design.md`.
 
 ## Install
 
+Uses the `wahoo` conda environment.
+
 ```bash
-uv sync
+# first time on a new machine:
+conda env create -f environment.yml
+# then (and whenever setting up a checkout):
+conda run -n wahoo python -m pip install -e .
 ```
+
+Without conda: `pip install -r requirements-dev.txt && pip install -e .` in any Python >= 3.10 environment.
 
 Linux: BlueZ must be running and your user must be allowed to use it (e.g. member of the `bluetooth` group).
 macOS: the terminal app needs Bluetooth permission (System Settings → Privacy & Security → Bluetooth).
@@ -3286,10 +3357,10 @@ macOS: the terminal app needs Bluetooth permission (System Settings → Privacy 
 ## Usage
 
 ```bash
-uv run wahoo-lsl scan                                   # find nearby CPS devices
-uv run wahoo-lsl list-features -c config.json           # print supported features and measurements
-uv run wahoo-lsl run -c config.json                     # stream + log until Ctrl-C
-uv run wahoo-lsl run -c config.json --debug             # also print each sample, verbose logging
+conda run -n wahoo wahoo-lsl scan                                   # find nearby CPS devices
+conda run -n wahoo wahoo-lsl list-features -c config.json           # print supported features and measurements
+conda run -n wahoo wahoo-lsl run -c config.json                     # stream + log until Ctrl-C
+conda run -n wahoo wahoo-lsl run -c config.json --debug             # also print each sample, verbose logging
 ```
 
 Copy `config.example.json` to `config.json` and edit. The same config works on every platform:
@@ -3328,7 +3399,7 @@ Samples that fail to parse keep `raw` and add `parse_error`.
 ## Tests
 
 ```bash
-uv run pytest
+conda run -n wahoo python -m pytest
 ```
 
 ## Manual hardware checklist
@@ -3345,12 +3416,12 @@ Run on each platform (macOS, Windows, Linux) with the same config, filling in on
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest -v`
+Run: `conda run -n wahoo python -m pytest -v`
 Expected: the full suite passes (all tasks' tests).
 
 - [ ] **Step 5: Smoke-check the CLI without hardware**
 
-Run: `uv run wahoo-lsl --help && uv run wahoo-lsl run -c missing.json; echo "exit=$?"`
+Run: `conda run -n wahoo wahoo-lsl --help && conda run -n wahoo wahoo-lsl run -c missing.json; echo "exit=$?"`
 Expected: help text listing `scan`, `list-features`, `run`; then a `Config error: cannot read config missing.json` line and `exit=2`.
 
 - [ ] **Step 6: Commit**
