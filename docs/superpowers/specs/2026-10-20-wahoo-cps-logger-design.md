@@ -151,8 +151,10 @@ Field rules:
   Any other `sys.platform` value → treated like Linux (`mac`).
 - `device.scan_timeout_s` (number > 0, default 10).
 - `measurements` (non-empty list of unique names from the vocabulary in section 6.3).
-  Unknown names → config error. Only listed measurements appear in `Sample.fields`
-  (`power` is not implicitly added); `raw` always contains the full payload.
+  Unknown names → config error. In the MVP the list drives **availability warnings only**
+  (connect-time Feature check and runtime missing-field warn-once); it does **not** filter
+  output. Every field parsed from a payload is logged. Output filtering by config is a
+  planned later feature.
 - `log.path` (str): `{start:...}` is formatted with the session start as a local
   `datetime` (strftime spec). Parent directories are created.
 - `log.flush_every_n` (int ≥ 1, default 10): flush file after N lines; always flush on
@@ -304,7 +306,7 @@ class Sample:
     t_wall_ns: int
     raw_hex: str
     flags: int | None            # None if parse failed before flags were read
-    fields: dict[str, object]    # only keys for configured measurements present in payload
+    fields: dict[str, object]    # ALL output keys parsed from the payload (no config filtering in MVP)
     parse_error: str | None
 
 STOP = object()   # sentinel
@@ -328,7 +330,7 @@ queue so ordering relative to samples is preserved.
 
 - Blocks on `ingest_q.get()`.
 - `RawSample` → `cps.parse_measurement` → build `Sample`:
-  - `fields` = values for configured measurements that are present.
+  - `fields` = `Measurement.values` in full (every parsed key, unfiltered).
   - For each configured, feature-supported measurement absent from `present`:
     `WarnOnce` key `("missing_field", name)` → `WARNING "Measurement '<name>' not present
     in notification (flags=0x....); further occurrences suppressed"`.
@@ -498,7 +500,7 @@ pytest, no hardware required for the automated suite.
   applied; `select_identifier` for `darwin`, `win32`, `linux`, other, with/without
   `mac`/`uuid`.
 - `test_pipeline.py`: feed `RawSample`/`Event`/`STOP` into ingest queue with a recording
-  fake sink; assert order preserved, same objects reach every sink, field filtering,
+  fake sink; assert order preserved, same objects reach every sink, all parsed fields present (no filtering),
   missing-field warn-once (caplog), parse errors forwarded with raw, backlog warning
   rate-limited, faulty sink doesn't block others, clean shutdown/join.
 - `test_ble_reconnect.py`: `ReconnectPolicy` waits/give-up; `CpsClient` against a fake
