@@ -199,3 +199,26 @@ def test_make_event_reads_both_clocks():
     assert e.detail == {"a": 1}
     assert before <= e.t_lsl <= after
     assert isinstance(e.t_wall_ns, int)
+
+
+def test_unexpected_dispatcher_error_does_not_lose_data(monkeypatch, caplog):
+    from wahoo_lsl import cps, pipeline
+
+    calls = {"n": 0}
+
+    def flaky(data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return cps.parse_measurement(data)
+
+    monkeypatch.setattr(pipeline, "parse_measurement", flaky)
+    sink = RecordingSink()
+    with caplog.at_level(logging.ERROR):
+        run_pipeline([raw(0, POWER_ONLY), raw(1, POWER_ONLY)], [sink])
+    s0, s1 = samples(sink)
+    assert "RuntimeError" in s0.parse_error
+    assert s0.fields == {}
+    assert s0.raw_hex == POWER_ONLY.hex()
+    assert s1.fields["power_w"] == 200
+    assert len([r for r in caplog.records if "Dispatcher failed" in r.getMessage()]) == 1

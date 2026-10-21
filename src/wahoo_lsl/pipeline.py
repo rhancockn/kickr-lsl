@@ -146,16 +146,38 @@ class Dispatcher(threading.Thread):
                 for q in self._sinks.values():
                     q.put(STOP)
                 return
-            if isinstance(item, RawSample):
-                out: Sample | Event = self._process(item)
-            elif isinstance(item, Event):
-                out = self._on_event(item)
-            else:
+            if not isinstance(item, (RawSample, Event)):
                 log.error("Dispatcher ignoring unexpected item %r", item)
                 continue
+            try:
+                out: Sample | Event = (
+                    self._process(item) if isinstance(item, RawSample) else self._on_event(item)
+                )
+            except Exception as e:
+                self._log_error(e)
+                if isinstance(item, RawSample):
+                    self.parse_errors += 1
+                    out = Sample(
+                        item.seq,
+                        item.t_lsl,
+                        item.t_wall_ns,
+                        item.data.hex(),
+                        None,
+                        {},
+                        f"internal error: {type(e).__name__}: {e}",
+                    )
+                else:
+                    out = item
             for q in self._sinks.values():
                 q.put(out)
-            self._check_backlog()
+            try:
+                self._check_backlog()
+            except Exception as e:
+                self._log_error(e)
+
+    def _log_error(self, e: Exception) -> None:
+        if self._warn.check(("dispatcher_error", type(e).__name__)):
+            log.exception("Dispatcher failed processing an item; continuing")
 
     def _on_event(self, event: Event) -> Event:
         if event.kind == "features":
