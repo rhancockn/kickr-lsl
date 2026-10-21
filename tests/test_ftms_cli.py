@@ -1,6 +1,10 @@
 import asyncio
 import json
+import logging
+import os
+import signal
 import socket
+import sys
 from importlib.metadata import entry_points
 
 import pytest
@@ -8,7 +12,7 @@ from ftms_fakes import FakeFtmsBackend
 from ftms_stub import StubService, snapshot
 
 from wahoo_lsl.ftms.cli import _serve, build_parser, format_status, main
-from wahoo_lsl.ftms.client import PowerReading, Status, TargetState
+from wahoo_lsl.ftms.client import KickrClient, PowerReading, Status, TargetState
 from wahoo_lsl.ftms.config import parse_ftms_config
 
 
@@ -185,3 +189,97 @@ def test_end_to_end_set_read_disconnect_shutdown():
     after_150 = writes[writes.index(b"\x05\x96\x00") + 1 :]
     assert after_150 and all(w == b"\x05\x00\x00" for w in after_150)
     assert backend.clients[0].is_connected is False
+
+
+def _cfg(port, **extra):
+    return parse_ftms_config(
+        {"device": {"name": "KICKR"}, "reconnect": {"backoff_s": [0.01], **extra}, "ftms": {"port": port}}
+    )
+
+
+async def _wait(cond, timeout=3.0):
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not cond():
+        if loop.time() > deadline:
+            raise AssertionError("condition not met in time")
+        await asyncio.sleep(0.005)
+
+
+async def _setup_done(backend, port):
+    await _wait(lambda: len(backend.writes) >= 3)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 3.0
+    while True:
+        try:
+            _, w = await asyncio.open_connection("127.0.0.1", port)
+            return w
+        except OSError:
+            if loop.time() > deadline:
+                raise
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(SIGINT) terminates the process on Windows")
+def test_serve_sigint_graceful_shutdown():
+    port = free_port()
+    backend = FakeFtmsBackend()
+
+    async def scenario():
+        task = asyncio.create_task(_serve(_cfg(port), backend))
+        w = await _setup_done(backend, port)
+        w.close()
+        await asyncio.sleep(0.1)  # let the client-disconnect spin-down settle
+        os.kill(os.getpid(), signal.SIGINT)
+        return await asyncio.wait_for(task, 5.0)
+
+    assert asyncio.run(scenario()) == 0
+    assert backend.writes[-1] == b"\x05\x00\x00"
+    assert backend.clients[0].is_connected is False
+    assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+
+
+def test_serve_reconnect_disabled_exits_4():
+    port = free_port()
+    backend = FakeFtmsBackend()
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(_serve(_cfg(port, enabled=False), backend, stop))
+        w = await _setup_done(backend, port)
+        backend.clients[0].drop()
+        try:
+            return await asyncio.wait_for(task, 5.0)
+        finally:
+            w.close()
+
+    assert asyncio.run(scenario()) == 4
+
+
+def test_serve_unexpected_error_exits_1_and_spins_down(monkeypatch, caplog):
+    from wahoo_lsl.ftms.controller import Controller
+
+    async def boom(self, stop):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(Controller, "run", boom)
+    backend = FakeFtmsBackend()
+
+    async def scenario():
+        return await asyncio.wait_for(_serve(_cfg(free_port()), backend, asyncio.Event()), 5.0)
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(scenario()) == 1
+    assert backend.writes[:3] == [b"\x00", b"\x07", b"\x05\x00\x00"]
+    assert backend.writes[-1] == b"\x05\x00\x00" and len(backend.writes) > 3
+    assert "spin-down (internal error)" in caplog.text
+
+
+@pytest.mark.parametrize("argv", [["read"], ["set", "150"]])
+def test_client_ctrl_c_returns_130(monkeypatch, argv):
+    def interrupt(self):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(KickrClient, "read", interrupt)
+    with StubService(lambda r: snapshot()) as svc:
+        assert main([*argv, "--port", str(svc.port)]) == 130
