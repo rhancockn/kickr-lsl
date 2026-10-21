@@ -1,7 +1,7 @@
 [project]
 name = "wahoo-lsl"
 version = "0.1.0"
-description = "Stream and log Cycling Power Service data from a Wahoo KICKR over BLE"
+description = "Stream CPS data from and control (FTMS) a Wahoo KICKR over BLE"
 requires-python = ">=3.10"
 dependencies = [
     "bleak>=1.0",
@@ -13,6 +13,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 wahoo-lsl = "wahoo_lsl.cli:main"
+wahoo-ftms = "wahoo_lsl.ftms.cli:main"
 
 [build-system]
 requires = ["setuptools>=64"]

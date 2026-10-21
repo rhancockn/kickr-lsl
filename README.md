@@ -84,3 +84,48 @@ Run on each platform (macOS, Windows, Linux) with the same config, filling in on
 4. Power-cycle the KICKR mid-run: a "Connection ... lost" warning, `disconnected` → `reconnect_attempt` → `connected` → `reconnected` events in the log, `seq` continues.
 5. Ctrl-C (in an activated `wahoo` shell, not via `conda run`): clean exit (code 0, check with `echo $?`), last line of the log is a `stopped` event.
 6. `run --debug`: each sample printed to stdout.
+
+## FTMS power control (`wahoo-ftms`)
+
+A separate service that takes FTMS control of the trainer and holds ERG targets requested by
+one local client. It uses its own BLE connection, so it can run on a different machine from
+the CPS logger (or alongside it). Design: `docs/superpowers/specs/2026-10-21-kickr-ftms-control-design.md`.
+
+```bash
+cp ftms.example.json ftms.json          # edit device name / mac / uuid as for config.json
+conda activate wahoo
+wahoo-ftms serve -c ftms.json           # connect, take control, ERG at 0 W; Ctrl-C spins down and exits
+wahoo-ftms serve -c ftms.json --debug   # log every control-point write/response and notification
+wahoo-ftms read                         # one status line
+wahoo-ftms set 150 --hold 30            # read, set 150 W, wait for confirmation, read back, hold 30 s
+```
+
+The trainer goes back to 0 W whenever the client disconnects (including when `wahoo-ftms set`
+exits), on any service error, and on shutdown. After a BLE drop the service reconnects and sets
+0 W; `link_epoch` increases and the client must send its target again.
+
+From Python (standard library only; no bleak/pylsl needed in the client's environment):
+
+```python
+from wahoo_lsl.ftms.client import KickrClient
+
+with KickrClient() as kickr:            # 127.0.0.1:47610
+    kickr.set_target_power(150)         # returns immediately with the accepted value
+    print(kickr.read_target_power())    # TargetState(requested_w, confirmed_w, pending, t_lsl)
+    print(kickr.read_power())           # PowerReading(watts, t_lsl, age_s)
+# leaving the block disconnects -> service spins down to 0 W
+```
+
+Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts":150}` and
+`{"cmd":"read"}`; errors are `{"ok":false,"error":"bad_request|invalid_watts|link_down|busy","detail":...}`.
+
+### Manual hardware checklist (FTMS)
+
+1. `wahoo-ftms serve -c ftms.json --debug`: log shows request_control, start_or_resume and set 0 W each answered with success.
+2. `wahoo-ftms read`: `link=ready epoch=1 target=0 W` and power updating about once per second while pedalling.
+3. `wahoo-ftms set 100 --hold 10` while pedalling: resistance rises within ~2 s; after the hold the trainer returns to 0 W.
+4. Run a Python client that sets 150 W, then kill it (`kill -9`): the trainer returns to 0 W.
+5. Switch the trainer off for ~10 s mid-session: warnings, reconnect, `epoch=2`, target 0 W.
+6. Open the Wahoo app or Zwift and let it take control: "control permission lost" warning, reconnect, 0 W.
+7. Run `wahoo-lsl run -c config.json` at the same time: both connect and work (the KICKR accepts multiple BLE centrals).
+8. Ctrl-C the service while holding a target: "spin-down (shutdown): 0 W confirmed", exit 0.
