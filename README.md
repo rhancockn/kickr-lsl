@@ -136,3 +136,41 @@ Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts"
 6. Open the Wahoo app or Zwift and let it take control: "control permission lost" warning, reconnect, 0 W.
 7. Run `wahoo-lsl run -c config.json` at the same time: both connect and work (the KICKR accepts multiple BLE centrals).
 8. Ctrl-C the service while holding a target: "spin-down (shutdown): 0 W confirmed", exit 0.
+
+## Test dashboard (`wahoo-dashboard`)
+
+A small Tk window for testing the FTMS control API and the CPS logger together. It uses
+only the public pieces: `KickrClient` for setting and reading the target, and the CPS
+JSONL log files for power, speed and cadence.
+
+```bash
+pip install -e .            # once, so the wahoo-dashboard command exists
+wahoo-dashboard             # uses ftms.json, config.json and logs/ in the current folder
+wahoo-dashboard --ftms-config my-ftms.json --cps-config my-cps.json --log-dir logs --debug
+```
+
+`wahoo-dashboard` starts `wahoo-ftms serve`, waits for its port, starts `wahoo-lsl run`,
+then opens the dashboard. Output from all three is shown with `[ftms]`, `[cps]` and
+`[dash]` prefixes. Closing the window, pressing Ctrl-C, or any of the three exiting stops
+the rest in the order dashboard → FTMS service → CPS logger (press Ctrl-C again to skip
+the waits). The exit code is the first non-zero exit among the three, or 2 for a
+config or start-up problem.
+
+To open only the window against a service and logger that are already running:
+
+```bash
+python -m wahoo_lsl.dashboard.app --log-dir logs [--port 47610] [--max-watts 1000] [--circumference-m 2.105]
+```
+
+- **Slider:** sends the target as you drag (the service applies at most 2 changes per
+  second, latest wins). "0 W" drops it straight to zero. When the dashboard (re)connects
+  the slider resets to 0, matching the service's spin-down.
+- **Target panel:** requested and confirmed target read back from the service, link state
+  and last error, with a graph of the confirmed target.
+- **CPS panels:** power, speed and cadence with graphs. Speed and cadence are calculated
+  from the wheel and crank revolution counters; speed assumes a 2.105 m wheel unless you
+  pass `--circumference-m`.
+- **Graphs:** fill left to right over 5 minutes, then all clear and start again.
+- **Lag:** the logger writes to disk every `log.flush_every_n` samples, so CPS values can
+  arrive several seconds late (points still land at the time they were measured). Set
+  `"flush_every_n": 1` in the logger config for a livelier display.
