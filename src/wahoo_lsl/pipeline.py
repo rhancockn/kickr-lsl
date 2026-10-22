@@ -9,8 +9,9 @@ import logging
 import queue
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from . import clock
 from .cps import ParseError, parse_measurement
@@ -67,6 +68,7 @@ class Sink(ABC):
     """Consumer of Samples and Events. All methods are called on the sink's own thread."""
 
     name: str = "sink"
+    batched: bool = False  # True: the runner passes each drained queue batch to handle_batch()
 
     def start(self) -> None:
         """Open resources."""
@@ -75,12 +77,17 @@ class Sink(ABC):
     def handle(self, item: Sample | Event) -> None:
         """Process one item."""
 
+    def handle_batch(self, items: list[Sample | Event]) -> None:
+        """Process the items drained from the queue in one go (batched sinks only)."""
+        for item in items:
+            self.handle(item)
+
     def stop(self) -> None:
         """Flush and close resources."""
 
 
 class SinkRunner(threading.Thread):
-    """Feeds one sink from its queue until STOP. A failing sink never blocks the dispatcher."""
+    """Feeds one sink from its queue until STOP, in drained batches. A failing sink never blocks the dispatcher."""
 
     def __init__(self, sink: Sink, q: queue.Queue, warn: WarnOnce) -> None:
         super().__init__(name=f"sink-{sink.name}", daemon=True)
@@ -96,25 +103,49 @@ class SinkRunner(threading.Thread):
             log.exception("Sink %s failed to start; its data will be discarded", self.sink.name)
             started = False
         while True:
-            item = self.queue.get()
-            if item is STOP:
+            batch, stopping = self._next_batch()
+            if started and batch:
+                self._deliver(batch)
+            if stopping:
                 break
-            if not started:
-                continue
-            try:
-                self.sink.handle(item)
-            except Exception as e:
-                if self._warn.check(("sink_error", self.sink.name, type(e).__name__)):
-                    log.exception(
-                        "Sink %s failed handling an item; further %s errors suppressed",
-                        self.sink.name,
-                        type(e).__name__,
-                    )
         if started:
             try:
                 self.sink.stop()
             except Exception:
                 log.exception("Sink %s failed to stop cleanly", self.sink.name)
+
+
+    def _next_batch(self) -> tuple[list, bool]:
+        """Block for one item, then take whatever else is already queued. True once STOP is seen."""
+        batch: list = []
+        item = self.queue.get()
+        while item is not STOP:
+            batch.append(item)
+            try:
+                item = self.queue.get_nowait()
+            except queue.Empty:
+                return batch, False
+        return batch, True
+
+    def _deliver(self, batch: list) -> None:
+        if self.sink.batched:
+            self._call(self.sink.handle_batch, batch)
+        else:
+            for item in batch:
+                self._call(self.sink.handle, item)
+
+    def _call(self, fn: Callable[[Any], None], arg: Any) -> None:
+        try:
+            fn(arg)
+        except Exception as e:
+            if self._warn.check(("sink_error", self.sink.name, type(e).__name__)):
+                log.exception(
+                    "Sink %s failed handling a batch; further %s errors suppressed"
+                    if self.sink.batched
+                    else "Sink %s failed handling an item; further %s errors suppressed",
+                    self.sink.name,
+                    type(e).__name__,
+                )
 
 
 class Dispatcher(threading.Thread):
