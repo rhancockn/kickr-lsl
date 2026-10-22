@@ -29,6 +29,8 @@ class KickrError(Exception):
 
 
 class TargetState(NamedTuple):
+    # The last two fields have defaults: constructing with the old 4 fields and attribute access keep
+    # working; unpacking into 4 names does not.
     requested_w: int
     confirmed_w: int | None
     pending: bool

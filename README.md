@@ -108,8 +108,9 @@ exits), on any service error, and on shutdown. After a BLE drop the service reco
 **Slew.** By default the service ramps to each new target at `ftms.slew_w_per_s` (10 W/s), sending
 an interpolated setpoint every `ftms.slew_update_interval_s` (10 s) so the KICKR's own ERG ramp smooths
 each step: 100 → 250 W sends 200 W after 10 s and 250 W after 15 s; a change smaller than one
-interval's worth is sent once, when its ramp ends. A new target mid-ramp continues from the current
-setpoint. `max_rate_hz` still limits how often anything is sent. Set `"slew_w_per_s": 0` in
+interval's worth is sent once, when its ramp ends. While a ramp runs, updates go out every
+`slew_update_interval_s`; a new target or rate change mid-ramp continues from the current setpoint
+without postponing the next update. `max_rate_hz` still limits how often anything is sent. Set `"slew_w_per_s": 0` in
 `ftms.json` (or call `set_slew_rate(0)`) for the old behaviour: each target goes straight to the
 trainer. A client's rate lasts until it disconnects. Disconnects, BLE drops and shutdown always go to
 0 W immediately, without a ramp.
@@ -142,7 +143,7 @@ Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts"
 
 1. `wahoo-ftms serve -c ftms.json --debug`: log shows request_control, start_or_resume and set 0 W each answered with success.
 2. `wahoo-ftms read`: `link=ready epoch=1 target=0 W` and power updating about once per second while pedalling.
-3. `wahoo-ftms set 100 --hold 10` while pedalling: resistance rises within ~2 s; after the hold the trainer returns to 0 W.
+3. `wahoo-ftms set 100 --slew 0 --hold 10` while pedalling: resistance rises within ~2 s; after the hold the trainer returns to 0 W.
 4. Run a Python client that sets 150 W, then kill it (`kill -9`): the trainer returns to 0 W.
 5. Switch the trainer off for ~10 s mid-session: warnings, reconnect, `epoch=2`, target 0 W.
 6. Open the Wahoo app or Zwift and let it take control: "control permission lost" warning, reconnect, 0 W.
@@ -187,7 +188,8 @@ python -m wahoo_lsl.dashboard.app --log-dir logs [--host 127.0.0.1] [--port 4761
 ```
 
 - **Slider:** sends the target as you drag (the service applies at most 2 changes per
-  second, latest wins). "0 W" drops it straight to zero. When the dashboard (re)connects
+  second, latest wins). "0 W" ramps at the current slew rate like the slider (closing the
+  dashboard drops to 0 W immediately). When the dashboard (re)connects
   the slider resets to 0, matching the service's spin-down.
 - **Target panel:** requested and confirmed target read back from the service, link state
   and last error, with a graph of the confirmed target.

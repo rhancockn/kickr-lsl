@@ -25,8 +25,10 @@ runtime (`set_slew_rate`) and shown/editable in the dashboard. A slew rate of
   request (so a new target mid-ramp continues smoothly from where the ramp
   was); with no ramp running, S is the last value sent to the trainer (the
   confirmed target after `_mark_ready`/spin-down: 0 W).
-- Updates are sent at `t0 + k·I` (I = update interval, k = 1, 2, …) while
-  `< t0 + D`, each the interpolated value `S + (T − S)·(t − t0)/D` rounded
+- An update is due I (the update interval) after the previous update, or at
+  `t0 + D` if that is sooner. The cadence is anchored at the ramp start only
+  when starting from idle; a new target or rate change mid-ramp keeps it, so
+  frequent retargets cannot postpone updates. Each update is the interpolated value `S + (T − S)·(t − t0)/D` rounded
   to whole watts and passed through `Controller.clamp` (trainer step and
   limits); the final update is sent at `t0 + D` and is exactly T. A ramp
   shorter than I therefore sends one update at `t0 + D`.
@@ -37,7 +39,7 @@ runtime (`set_slew_rate`) and shown/editable in the dashboard. A slew rate of
 - `max_rate_hz` still sets the minimum gap between any two sends (a slider
   drag cannot flood the trainer); a due update waits for that gap.
 - Changing R mid-ramp restarts the ramp from the current interpolated value
-  with the new rate (new t0). Changing R to 0 sends T next (subject to the
+  with the new rate (new t0; the update cadence is kept). Changing R to 0 sends T next (subject to the
   `max_rate_hz` gap), as today.
 - R = 0: today's code path unchanged — each `set` goes straight to the
   sender, rate-limited by `max_rate_hz`, latest wins.
@@ -68,10 +70,9 @@ class Ramp:
     start_w: float; target_w: int; rate_w_per_s: float; t0: float; interval_s: float
     end_t -> float                       # t0 + |target − start| / rate
     value_at(t) -> float                 # linear, clamped to [t0, end_t]
-    next_update_at(after_t) -> float     # smallest t0 + k·interval > after_t, capped at end_t
 ```
 
-No I/O, no clocks; rounding/clamping to trainer limits stays in the
+No I/O, no clocks, no update grid (the controller schedules updates); rounding/clamping to trainer limits stays in the
 controller (it owns `clamp`). `rate_w_per_s > 0` and `interval_s > 0`
 required (`ValueError` otherwise).
 
@@ -98,7 +99,7 @@ add `"slew_w_per_s": 0` for the old behaviour.
 - `reset_slew()`: R back to the config default, ramp cancelled (called by
   the server on client disconnect, before the spin-down).
 - `_sender`: when a ramp is active, sleeps until
-  `max(ramp.next_update_at(last_update_t), last_send + 1/max_rate_hz)`
+  `max(min(last_update_t + I, ramp.end_t), last_send + 1/max_rate_hz)`
   (waking early on any new request/rate change), then sends the clamped
   interpolated value; the final update sends T and ends the ramp. Without a
   ramp, today's loop.
@@ -169,8 +170,7 @@ add `"slew_w_per_s": 0` for the old behaviour.
 ## Testing
 
 - `slew.py`: value_at (up, down, before t0, after end), end_t,
-  next_update_at (multiples of interval, capped at end, ramp shorter than
-  interval), invalid rate/interval.
+  invalid rate/interval.
 - Controller (fake clock/sleep/link, as existing tests): 100→250 W example
   sends exactly (200 @ +10 s, 250 @ +15 s); short ramp single send at +D;
   new target mid-ramp starts from interpolated value; rate change mid-ramp
