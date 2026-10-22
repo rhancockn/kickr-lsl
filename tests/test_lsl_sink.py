@@ -296,3 +296,22 @@ def test_stop_releases_outlet_even_if_flush_fails():
         sink.handle_batch([sample(1.0, {"power_w": 1})])
     sink.stop()
     assert sink._outlet is None
+
+
+def test_reconnect_without_dis_model_keeps_outlet():
+    factory = Factory()
+    sink = LslSink(cfg(), factory)
+    sink.handle_batch([connected(device_info={"model_number": "KICKR V6"}), features()])
+    assert factory.outlets[0].info.source_id() == "KICKRV6-CPS-f24bfa"
+    sink.handle_batch([connected(device_info={}), features(), sample(5.0, {"power_w": 2})])
+    assert len(factory.outlets) == 1
+    assert rows(factory.outlets[0])[-1][0] == 2.0
+
+
+def test_reconnect_with_different_name_keeps_outlet():
+    factory = Factory()
+    sink = LslSink(cfg(), factory)
+    sink.handle_batch([connected(name="Wahoo KICKR 58EC"), features()])
+    sink.handle_batch([connected(name="KICKR"), features()])
+    sink.handle_batch([connected(name="KICKR CORE 1234"), features()])
+    assert len(factory.outlets) == 1

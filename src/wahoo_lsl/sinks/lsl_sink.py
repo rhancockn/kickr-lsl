@@ -87,6 +87,7 @@ class LslSink(Sink):
         self._cfg = cfg
         self._factory = outlet_factory or pylsl.StreamOutlet
         self._connected: dict = {}
+        self._models: dict[str, str] = {}  # address -> MODEL resolved on first sight, so source_id is stable
         self._outlet: Any = None
         self._identity: tuple[str, tuple[str, ...]] | None = None  # (source_id, channel keys)
         self._keys: list[str] = []
@@ -143,7 +144,10 @@ class LslSink(Sink):
         c = self._connected
         supported = sorted(features.get("supported", ()))
         keys = channel_keys(self._cfg.measurements, supported)
-        source_id = stream_id(c.get("name"), c.get("address") or "", c.get("device_info") or {})
+        address = c.get("address") or ""
+        if address not in self._models:
+            self._models[address] = _model(c.get("name"), c.get("device_info") or {})
+        source_id = f"{self._models[address]}-{STREAM_TYPE}-{_HEX.sub('', address)[-6:].lower()}"
         identity = (source_id, tuple(keys))
         if self._outlet is not None and identity == self._identity:
             return  # same device, same layout: keep the stream alive across the reconnect
