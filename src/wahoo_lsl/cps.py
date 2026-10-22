@@ -65,6 +65,40 @@ MEASUREMENTS: dict[str, MeasurementSpec] = {
 
 
 @dataclass(frozen=True)
+class FieldInfo:
+    unit: str
+    description: str
+    encoding: dict | None = None  # text/bool value -> numeric channel value
+
+
+# Units and meanings of every output key, plus derived metrics (shared by LSL channel metadata).
+FIELD_INFO: dict[str, FieldInfo] = {
+    "power_w": FieldInfo("W", "instantaneous power"),
+    "pedal_power_balance_pct": FieldInfo("%", "pedal power balance"),
+    "pedal_power_balance_ref": FieldInfo("", "pedal power balance reference", {"unknown": 0.0, "left": 1.0}),
+    "accumulated_torque_nm": FieldInfo("N.m", "cumulative torque, wraps at 2048 N.m"),
+    "torque_source": FieldInfo("", "accumulated torque source", {"wheel": 0.0, "crank": 1.0}),
+    "wheel_revs": FieldInfo("rev", "cumulative wheel revolutions (uint32)"),
+    "wheel_event_t": FieldInfo("1/2048 s", "last wheel event time, wraps at 65536"),
+    "crank_revs": FieldInfo("rev", "cumulative crank revolutions, wraps at 65536"),
+    "crank_event_t": FieldInfo("1/1024 s", "last crank event time, wraps at 65536"),
+    "max_force_n": FieldInfo("N", "maximum force magnitude"),
+    "min_force_n": FieldInfo("N", "minimum force magnitude"),
+    "max_torque_nm": FieldInfo("N.m", "maximum torque magnitude"),
+    "min_torque_nm": FieldInfo("N.m", "minimum torque magnitude"),
+    "max_angle_deg": FieldInfo("deg", "angle of maximum magnitude"),
+    "min_angle_deg": FieldInfo("deg", "angle of minimum magnitude"),
+    "top_dead_spot_deg": FieldInfo("deg", "top dead spot angle"),
+    "bottom_dead_spot_deg": FieldInfo("deg", "bottom dead spot angle"),
+    "accumulated_energy_kj": FieldInfo("kJ", "cumulative energy"),
+    "offset_compensation": FieldInfo("", "offset compensation indicator", {False: 0.0, True: 1.0}),
+    "speed_kmh": FieldInfo("km/h", "speed from wheel revolutions and wheel circumference"),
+    "cadence_rpm": FieldInfo("rpm", "cadence from crank revolutions"),
+}
+DERIVED_KEYS = ("speed_kmh", "cadence_rpm")
+
+
+@dataclass(frozen=True)
 class Measurement:
     flags: int
     values: dict[str, object]  # every output key decoded from this payload
