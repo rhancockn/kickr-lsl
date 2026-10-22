@@ -8,6 +8,7 @@ from contextlib import suppress
 from typing import Any, Protocol
 
 from .controller import LinkDown
+from .slew import MAX_SLEW_W_PER_S
 
 log = logging.getLogger(__name__)
 
@@ -19,6 +20,10 @@ class ControllerApi(Protocol):
     def request_target(self, watts: int) -> tuple[int, bool]: ...
 
     def snapshot(self) -> dict[str, Any]: ...
+
+    def set_slew_rate(self, w_per_s: float) -> float: ...
+
+    def reset_slew(self) -> None: ...
 
     async def spin_down(self, reason: str) -> bool: ...
 
@@ -100,6 +105,7 @@ class ControlServer:
             # Spin down before awaiting wait_closed: Controller.spin_down zeroes requested_w
             # before its first await, so a reconnecting client's later set always wins.
             if not self._closing:
+                self._controller.reset_slew()  # the rate belongs to the client that set it
                 await self._controller.spin_down("client disconnected")
             with suppress(ConnectionError):
                 await writer.wait_closed()
@@ -123,7 +129,18 @@ class ControlServer:
             except LinkDown as e:
                 return error_reply("link_down", str(e))
             return {"ok": True, "target_w": accepted, "clamped": clamped}
-        return error_reply("bad_request", f"unknown cmd {cmd!r}; expected 'set' or 'read'")
+        if cmd == "slew":
+            rate = request.get("w_per_s")
+            if (
+                isinstance(rate, bool)
+                or not isinstance(rate, (int, float))
+                or not 0 <= rate <= MAX_SLEW_W_PER_S  # also rejects NaN/inf; no float() so huge ints cannot overflow
+            ):
+                return error_reply(
+                    "invalid_slew", f"w_per_s must be a number 0..{MAX_SLEW_W_PER_S:g}, got {rate!r}"
+                )
+            return {"ok": True, "slew_w_per_s": self._controller.set_slew_rate(rate)}
+        return error_reply("bad_request", f"unknown cmd {cmd!r}; expected 'set', 'slew' or 'read'")
 
 
 async def _send(writer: asyncio.StreamWriter, obj: dict[str, Any]) -> None:

@@ -6,7 +6,7 @@ import pytest
 
 from wahoo_lsl.dashboard import app as app_mod
 from wahoo_lsl.dashboard.app import DASH, STALE_S, Dashboard
-from wahoo_lsl.ftms.client import PowerReading, Status, TargetState
+from wahoo_lsl.ftms.client import PowerReading, SlewState, Status, TargetState
 
 
 @pytest.fixture
@@ -29,10 +29,14 @@ def tk_root():
 class FakeWorker:
     def __init__(self):
         self.requests = []
+        self.slews = []
         self.stopped = 0
 
     def request(self, watts):
         self.requests.append(watts)
+
+    def request_slew(self, w_per_s):
+        self.slews.append(w_per_s)
 
     def stop(self):
         self.stopped += 1
@@ -228,3 +232,39 @@ def test_zero_button_sends_even_if_zero_was_last_sent(dash):
     dash.app.zero_button.invoke()
     dash.root.update()
     assert dash.worker.requests == [0, 0]
+
+
+def test_slew_apply_sends_spinbox_value(dash):
+    assert dash.app.slew_var.get() == "10"
+    dash.app.slew_var.set("25")
+    dash.app._on_slew_apply()
+    assert dash.worker.slews == [25.0]
+
+
+@pytest.mark.parametrize("text", ["abc", "-1", "1001", "nan"])
+def test_slew_apply_rejects_bad_input(dash, text):
+    dash.app.slew_var.set(text)
+    dash.app._on_slew_apply()
+    assert dash.worker.slews == []
+    assert "slew" in dash.app.set_error_text.get()
+
+
+def test_slew_events_update_error_text(dash):
+    pump(dash, ("slew_error", "invalid_slew: nope"))
+    assert dash.app.set_error_text.get() == "invalid_slew: nope"
+    pump(dash, ("slew_ok", 20.0))
+    assert dash.app.set_error_text.get() == ""
+
+
+def test_status_while_ramping_shows_setpoint_and_time_left(dash):
+    dash.lsl.t = 1000.0
+    status = Status("ready", 1, TargetState(250, 200, True, 5.0, 210, 1012.4), PowerReading(None, None, None),
+                    None, None, SlewState(10.0, 10.0))
+    pump(dash, ("status", status))
+    assert dash.app.target_text.get() == "requested 250 W · setpoint 210 W · confirmed 200 W (pending) · ramp 12 s"
+    assert dash.app.link_text.get() == "link ready (epoch 1) · slew 10 W/s"
+
+
+def test_main_rejects_bad_slew():
+    with pytest.raises(SystemExit):
+        app_mod.main(["--slew", "-1"])

@@ -5,6 +5,7 @@ the service. Use one KickrClient per process (the service accepts a single clien
 not thread-safe. Any failure mid-call (timeout, interrupt, malformed reply) closes the client:
 later calls raise ConnectionError without sending. Closing the client (or the process
 exiting) makes the service spin the trainer down to 0 W.
+The slew rate set with set_slew_rate also resets to the service default when the client disconnects.
 """
 from __future__ import annotations
 
@@ -28,10 +29,19 @@ class KickrError(Exception):
 
 
 class TargetState(NamedTuple):
+    # The last two fields have defaults: constructing with the old 4 fields and attribute access keep
+    # working; unpacking into 4 names does not.
     requested_w: int
     confirmed_w: int | None
     pending: bool
     t_lsl: float | None  # pylsl.local_clock() time of the last confirmation
+    setpoint_w: int | None = None  # current ramp value (= requested_w when not ramping); None from older services
+    ramp_end_t_lsl: float | None = None  # when the running ramp reaches requested_w; None when not ramping
+
+
+class SlewState(NamedTuple):
+    w_per_s: float  # 0 = targets are sent directly
+    update_interval_s: float
 
 
 class PowerReading(NamedTuple):
@@ -47,6 +57,7 @@ class Status(NamedTuple):
     power: PowerReading
     last_error: str | None
     last_error_t_lsl: float | None
+    slew: SlewState | None = None  # None from services without slew
 
 
 
@@ -62,6 +73,17 @@ def _whole_watts(value: Any) -> int:
     if not math.isfinite(value):
         raise ValueError(f"watts must be finite, got {value!r}")
     return round(value)
+
+
+def _rate(value: Any) -> float:
+    if isinstance(value, bool):
+        raise TypeError("w_per_s must be a number, not bool")
+    if not isinstance(value, numbers.Real):
+        raise TypeError(f"w_per_s must be a real number, got {type(value).__name__}")
+    rate = float(value)
+    if not math.isfinite(rate):
+        raise ValueError(f"w_per_s must be finite, got {value!r}")
+    return rate
 
 class KickrClient:
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, timeout_s: float = 2.0) -> None:
@@ -82,6 +104,15 @@ class KickrClient:
         bool, non-numbers (TypeError) and NaN/infinity (ValueError) are rejected without sending.
         """
         return self._request({"cmd": "set", "watts": _whole_watts(watts)}, lambda r: int(r["target_w"]))
+
+    def set_slew_rate(self, w_per_s: float) -> float:
+        """Set this connection's slew rate in W/s (0 = targets go straight to the trainer).
+
+        Returns the accepted rate. Resets to the service default when the client disconnects.
+        bool, non-numbers (TypeError) and NaN/infinity (ValueError) are rejected without sending;
+        the service rejects rates outside 0..1000 with KickrError("invalid_slew").
+        """
+        return self._request({"cmd": "slew", "w_per_s": _rate(w_per_s)}, lambda r: float(r["slew_w_per_s"]))
 
     def read(self) -> Status:
         return self._request({"cmd": "read"}, _parse_status)
@@ -127,12 +158,15 @@ class KickrClient:
 
 
 def _parse_status(r: dict[str, Any]) -> Status:
-    t, pw = r["target"], r["power"]
+    t, pw, sl = r["target"], r["power"], r.get("slew")
     return Status(
         link=r["link"],
         link_epoch=r["link_epoch"],
-        target=TargetState(t["requested_w"], t["confirmed_w"], t["pending"], t["t_lsl"]),
+        target=TargetState(
+            t["requested_w"], t["confirmed_w"], t["pending"], t["t_lsl"], t.get("setpoint_w"), t.get("ramp_end_t_lsl")
+        ),
         power=PowerReading(pw["watts"], pw["t_lsl"], pw["age_s"]),
         last_error=r.get("last_error"),
         last_error_t_lsl=r.get("last_error_t_lsl"),
+        slew=None if sl is None else SlewState(sl["w_per_s"], sl["update_interval_s"]),
     )

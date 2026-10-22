@@ -86,3 +86,39 @@ def test_load_errors(tmp_path):
     good = tmp_path / "good.json"
     good.write_text(json.dumps({"device": {"name": "K"}}), encoding="utf-8")
     assert load_ftms_config(good).device.name == "K"
+
+
+def test_slew_defaults():
+    cfg = parse_ftms_config({"device": {"name": "KICKR"}})
+    assert cfg.ftms.slew_w_per_s == 10.0
+    assert cfg.ftms.slew_update_interval_s == 10.0
+
+
+def test_slew_values():
+    cfg = parse_ftms_config({"device": {"name": "KICKR"}, "ftms": {"slew_w_per_s": 0, "slew_update_interval_s": 2.5}})
+    assert cfg.ftms.slew_w_per_s == 0.0
+    assert cfg.ftms.slew_update_interval_s == 2.5
+    assert parse_ftms_config({"device": {"name": "KICKR"}, "ftms": {"slew_w_per_s": 1000}}).ftms.slew_w_per_s == 1000.0
+
+
+@pytest.mark.parametrize(
+    "ftms, message",
+    [
+        ({"slew_w_per_s": -1}, "ftms.slew_w_per_s"),
+        ({"slew_w_per_s": 1001}, "ftms.slew_w_per_s"),
+        ({"slew_w_per_s": 10**400}, "ftms.slew_w_per_s"),
+        ({"slew_w_per_s": True}, "ftms.slew_w_per_s"),
+        ({"slew_w_per_s": "10"}, "ftms.slew_w_per_s"),
+        ({"slew_w_per_s": float("nan")}, "ftms.slew_w_per_s"),
+        ({"slew_update_interval_s": 0}, "ftms.slew_update_interval_s"),
+        ({"slew_update_interval_s": float("inf")}, "ftms.slew_update_interval_s"),
+    ],
+)
+def test_invalid_slew_settings(ftms, message):
+    with pytest.raises(ConfigError, match=message):
+        parse_ftms_config({"device": {"name": "KICKR"}, "ftms": ftms})
+
+
+def test_example_config_has_slew_keys():
+    cfg = load_ftms_config(Path(__file__).resolve().parents[1] / "ftms.example.json")
+    assert (cfg.ftms.slew_w_per_s, cfg.ftms.slew_update_interval_s) == (10.0, 10.0)

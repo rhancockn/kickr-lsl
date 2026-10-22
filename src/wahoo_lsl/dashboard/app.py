@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import queue
 import signal
 import sys
@@ -16,6 +17,7 @@ import pylsl
 
 from wahoo_lsl.ftms import DEFAULT_HOST, DEFAULT_PORT
 from wahoo_lsl.ftms.client import Status
+from wahoo_lsl.ftms.slew import MAX_SLEW_W_PER_S
 
 from .graph import Graph
 from .logtail import LogFollower
@@ -44,6 +46,7 @@ class Dashboard:
         follower: Any,
         *,
         max_watts: int = 1000,
+        slew_w_per_s: float = 10.0,
         circumference_m: float = DEFAULT_CIRCUMFERENCE_M,
         clock: Callable[[], float] = pylsl.local_clock,
         monotonic: Callable[[], float] = time.monotonic,
@@ -58,13 +61,13 @@ class Dashboard:
         self._service, self._log_file, self._bad = "starting", DASH, 0
         self._closing = False
         self._close_requested = False
-        self._build(max_watts)
+        self._build(max_watts, slew_w_per_s)
         self._refresh_status()
         root.protocol("WM_DELETE_WINDOW", self.close)
         self._pump_id = root.after(PUMP_MS, self._pump)
         self._redraw_id = root.after(REDRAW_MS, self._redraw)
 
-    def _build(self, max_watts: int) -> None:
+    def _build(self, max_watts: int, slew_w_per_s: float) -> None:
         root = self.root
         root.title("KICKR test dashboard")
         big = tkfont.nametofont("TkDefaultFont").copy()
@@ -78,6 +81,12 @@ class Dashboard:
         self.slider.pack(side="left", fill="x", expand=True, padx=6)
         self.zero_button = tk.Button(ctl, text="0 W", command=self._on_zero_button)
         self.zero_button.pack(side="left")
+        tk.Label(ctl, text="Slew W/s").pack(side="left", padx=(12, 2))
+        self.slew_var = tk.StringVar(value=f"{slew_w_per_s:g}")
+        self.slew_box = tk.Spinbox(ctl, from_=0, to=MAX_SLEW_W_PER_S, increment=1, width=6, textvariable=self.slew_var)
+        self.slew_box.pack(side="left")
+        self.slew_button = tk.Button(ctl, text="Apply", command=self._on_slew_apply)
+        self.slew_button.pack(side="left", padx=(2, 0))
 
         self.target_text = tk.StringVar(value=f"requested {DASH} · confirmed {DASH}")
         self.link_text = tk.StringVar(value=f"link {DASH}")
@@ -121,6 +130,16 @@ class Dashboard:
         self._last_sent = None  # always send, even if 0 was the last value
         self._set_target(0)
 
+    def _on_slew_apply(self) -> None:
+        try:
+            rate = float(self.slew_var.get())
+        except ValueError:
+            rate = math.nan
+        if not 0 <= rate <= MAX_SLEW_W_PER_S:  # also rejects NaN
+            self.set_error_text.set(f"slew must be a number 0..{MAX_SLEW_W_PER_S:g} W/s")
+            return
+        self.worker.request_slew(rate)
+
     def _set_target(self, watts: int) -> None:
         self.slider.set(watts)
         self._send(watts)
@@ -147,6 +166,10 @@ class Dashboard:
             self.set_error_text.set("")
         elif kind == "set_error":
             self.set_error_text.set(payload)
+        elif kind == "slew_ok":
+            self.set_error_text.set("")
+        elif kind == "slew_error":
+            self.set_error_text.set(payload)
         elif kind == "service_error":
             self.error_text.set(payload)
         elif kind == "cps_sample":
@@ -167,8 +190,18 @@ class Dashboard:
         t = s.target
         confirmed = DASH if t.confirmed_w is None else str(t.confirmed_w)
         pending = " (pending)" if t.pending else ""
-        self.target_text.set(f"requested {t.requested_w} W · confirmed {confirmed} W{pending}")
-        self.link_text.set(f"link {s.link} (epoch {s.link_epoch})")
+        if t.ramp_end_t_lsl is None:
+            self.target_text.set(f"requested {t.requested_w} W · confirmed {confirmed} W{pending}")
+        else:
+            left = max(0.0, t.ramp_end_t_lsl - self._clock())
+            self.target_text.set(
+                f"requested {t.requested_w} W · setpoint {t.setpoint_w} W · confirmed {confirmed} W{pending}"
+                f" · ramp {left:.0f} s"
+            )
+        link = f"link {s.link} (epoch {s.link_epoch})"
+        if s.slew is not None:
+            link += f" · slew {s.slew.w_per_s:g} W/s"
+        self.link_text.set(link)
         self.error_text.set(s.last_error or "")
         self.histories["target"].add(self._clock(), t.confirmed_w)
 
@@ -255,6 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-watts", type=int, default=1000, help="slider maximum in W (default 1000)")
     p.add_argument("--circumference-m", type=float, default=DEFAULT_CIRCUMFERENCE_M,
                    help=f"wheel circumference for speed (default {DEFAULT_CIRCUMFERENCE_M})")
+    p.add_argument("--slew", type=float, default=10.0,
+                   help="initial slew rate shown in the slew box, W/s (default 10)")
     return p
 
 
@@ -265,6 +300,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--max-watts must be positive")
     if not args.circumference_m > 0:
         parser.error("--circumference-m must be positive")
+    if not 0 <= args.slew <= MAX_SLEW_W_PER_S:
+        parser.error(f"--slew must be 0..{MAX_SLEW_W_PER_S:g}")
     try:
         root = tk.Tk()
     except tk.TclError as e:
@@ -273,7 +310,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     events: queue.Queue = queue.Queue()
     worker = PowerWorker(events.put, args.host, args.port)
     follower = LogFollower(args.log_dir, events.put)
-    app = Dashboard(root, events, worker, follower, max_watts=args.max_watts, circumference_m=args.circumference_m)
+    app = Dashboard(root, events, worker, follower, max_watts=args.max_watts,
+                    slew_w_per_s=args.slew, circumference_m=args.circumference_m)
     for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
         sig = getattr(signal, name, None)
         if sig is not None:

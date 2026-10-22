@@ -1,4 +1,5 @@
 import fractions
+import math
 import socket
 import subprocess
 import sys
@@ -7,7 +8,7 @@ import time
 import pytest
 from ftms_stub import StubService, snapshot
 
-from wahoo_lsl.ftms.client import KickrClient, KickrError, PowerReading, Status, TargetState
+from wahoo_lsl.ftms.client import KickrClient, KickrError, PowerReading, SlewState, Status, TargetState
 
 
 def wait_for(cond, timeout=2.0):
@@ -172,3 +173,52 @@ def test_non_numeric_watts_rejected_without_sending(value, error):
             client.set_target_power(value)
         assert client.read().link == "ready"  # still usable; nothing was sent
         assert [r["cmd"] for r in svc.requests] == ["read"]
+
+
+def slew_reply(request):
+    if request["cmd"] == "slew":
+        return {"ok": True, "slew_w_per_s": float(request["w_per_s"])}
+    return snapshot(requested=250, confirmed=200, pending=True, setpoint=210, ramp_end=30.0, slew=10.0)
+
+
+def test_set_slew_rate_round_trip():
+    with StubService(slew_reply) as svc, KickrClient(port=svc.port) as client:
+        assert client.set_slew_rate(20) == 20.0
+        assert client.set_slew_rate(2.5) == 2.5
+        assert svc.requests[:2] == [{"cmd": "slew", "w_per_s": 20}, {"cmd": "slew", "w_per_s": 2.5}]
+
+
+def test_set_slew_rate_accepts_numpy_like_numbers():
+    with StubService(slew_reply) as svc, KickrClient(port=svc.port) as client:
+        assert client.set_slew_rate(fractions.Fraction(5, 2)) == 2.5
+        assert svc.requests[0] == {"cmd": "slew", "w_per_s": 2.5}
+
+
+@pytest.mark.parametrize("bad, exc", [(True, TypeError), ("10", TypeError), (None, TypeError), (math.nan, ValueError), (math.inf, ValueError)])
+def test_set_slew_rate_rejects_without_sending(bad, exc):
+    with StubService(slew_reply) as svc, KickrClient(port=svc.port) as client:
+        with pytest.raises(exc):
+            client.set_slew_rate(bad)
+        assert client.set_slew_rate(1) == 1.0  # still usable
+        assert svc.requests == [{"cmd": "slew", "w_per_s": 1}]
+
+
+def test_invalid_slew_reply_raises_kickr_error():
+    with StubService(lambda r: {"ok": False, "error": "invalid_slew", "detail": "w_per_s must be ..."}) as svc:
+        with KickrClient(port=svc.port) as client:
+            with pytest.raises(KickrError) as info:
+                client.set_slew_rate(5000)
+    assert info.value.code == "invalid_slew"
+
+
+def test_read_parses_ramp_and_slew_fields():
+    with StubService(slew_reply) as svc, KickrClient(port=svc.port) as client:
+        status = client.read()
+    assert status.target == TargetState(250, 200, True, 10.0, 210, 30.0)
+    assert status.slew == SlewState(10.0, 10.0)
+
+
+def test_read_from_older_service_leaves_new_fields_none():
+    with StubService(default_reply) as svc, KickrClient(port=svc.port) as client:
+        status = client.read()
+    assert (status.target.setpoint_w, status.target.ramp_end_t_lsl, status.slew) == (None, None, None)

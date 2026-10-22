@@ -1,4 +1,4 @@
-"""FTMS controller (spec §7.4–7.7): target state, rate-limited sender, spin-down, reconnect.
+"""FTMS controller (spec §7.4–7.7, slew spec): target state, slewed rate-limited sender, spin-down, reconnect.
 
 All methods run on the event loop; link callbacks also arrive there, so no locks are needed.
 """
@@ -16,6 +16,7 @@ from ..ble import BleSetupError, ReconnectExhausted, ReconnectPolicy, _sleep_unl
 from . import protocol as p
 from .config import FtmsConfig
 from .link import CommandRejected, LinkError
+from .slew import MAX_SLEW_W_PER_S, Ramp
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ SHUTDOWN_SPIN_DOWN_ATTEMPTS = 3  # at shutdown nothing retries later, so try a f
 SHUTDOWN_RETRY_DELAY_S = 0.2
 MAX_LINK_FAILURES = 3  # consecutive LinkErrors from the sender -> treat the link as lost
 MAX_REJECTIONS = 3  # rejected sends of one requested target before giving up on it
+RAMP_END_TOLERANCE_S = 1e-6  # a ramp step this close to the end time is the final step
 
 
 class LinkDown(Exception):
@@ -78,6 +80,12 @@ class Controller:
         self._link_failures = 0
         self._rejections = 0
         self._requests_since_send = 0
+        self._default_slew = cfg.ftms.slew_w_per_s
+        self._slew_interval = cfg.ftms.slew_update_interval_s
+        self.slew_w_per_s = self._default_slew
+        self._ramp: Ramp | None = None
+        self._last_update_t = -math.inf  # time of the last ramp step (sent or skipped)
+        self._sent_w = 0  # last value handed to the trainer: a ramp's origin when none is running
         link.on_bike_data = self._on_bike_data
         link.on_status = self._on_status
         link.on_link_lost = self._on_link_lost
@@ -169,15 +177,50 @@ class Controller:
     # ---- client-facing ---------------------------------------------------------
 
     def request_target(self, watts: int) -> tuple[int, bool]:
-        """Store a new target (clamped) and wake the sender. No BLE I/O; returns at once."""
+        """Store a new target (clamped), ramp it if slewing and it is an increase (decreases are
+        sent directly), wake the sender. No BLE I/O."""
         if self.state.link != "ready":
             raise LinkDown(f"BLE link is {self.state.link}")
         accepted = self.clamp(watts)
+        if self.slew_w_per_s > 0:
+            self._start_ramp(accepted)
         self.state.requested_w = accepted
         self._rejections = 0
         self._requests_since_send += 1
         self._wake.set()
         return accepted, accepted != watts
+
+    def set_slew_rate(self, w_per_s: float) -> float:
+        """Set the slew rate for increases (W/s; 0 = send targets directly). Restarts a running ramp from where it is."""
+        rate = float(w_per_s)
+        if not math.isfinite(rate) or not 0 <= rate <= MAX_SLEW_W_PER_S:
+            raise ValueError(f"slew rate must be 0..{MAX_SLEW_W_PER_S:g} W/s, got {w_per_s!r}")
+        self.slew_w_per_s = rate
+        if rate == 0:
+            self._ramp = None  # the sender sends the pending target directly
+        elif self._ramp is not None:
+            self._start_ramp(self.state.requested_w)
+        self._wake.set()
+        return rate
+
+    def reset_slew(self) -> None:
+        """Back to the configured rate, no ramp (the client that set the rate has gone)."""
+        self.slew_w_per_s = self._default_slew
+        self._ramp = None
+
+    def _setpoint(self, now: float) -> float:
+        return self._ramp.value_at(now) if self._ramp is not None else float(self._sent_w)
+
+    def _start_ramp(self, target: int) -> None:
+        """Ramp up to ``target``; a target at or below the setpoint cancels any ramp (sent directly)."""
+        now = self._now()
+        start = self._setpoint(now)
+        if target <= start:
+            self._ramp = None  # only increases are slewed: the sender sends a decrease directly
+            return
+        if self._ramp is None:
+            self._last_update_t = now  # starting from idle; a replacing ramp keeps the update cadence
+        self._ramp = Ramp(start, target, self.slew_w_per_s, now, self._slew_interval)
 
     def clamp(self, watts: int) -> int:
         r = self._link.power_range
@@ -191,7 +234,9 @@ class Controller:
 
     async def spin_down(self, reason: str) -> bool:
         """Send 0 W now (bypassing the rate limit). Returns success; never raises."""
+        self._ramp = None
         self.state.requested_w = 0
+        self._sent_w = 0
         if self.state.link != "ready":
             level = logging.WARNING if self.state.link == "reconnecting" else logging.DEBUG
             log.log(level, "spin-down (%s): link is %s, cannot send 0 W", reason, self.state.link)
@@ -209,7 +254,10 @@ class Controller:
 
     def snapshot(self) -> dict[str, Any]:
         s = self.state
-        age = None if s.power_t_lsl is None else round(self._now() - s.power_t_lsl, 3)
+        now = self._now()
+        ramp = self._ramp
+        setpoint = s.requested_w if ramp is None else self.clamp(round(ramp.value_at(now)))
+        age = None if s.power_t_lsl is None else round(now - s.power_t_lsl, 3)
         return {
             "link": s.link,
             "link_epoch": s.link_epoch,
@@ -218,25 +266,33 @@ class Controller:
                 "confirmed_w": s.confirmed_w,
                 "pending": self.pending,
                 "t_lsl": s.confirmed_t_lsl,
+                "setpoint_w": setpoint,
+                "ramp_end_t_lsl": None if ramp is None else ramp.end_t,
             },
             "power": {"watts": s.power_w, "t_lsl": s.power_t_lsl, "age_s": age},
             "last_error": s.last_error,
             "last_error_t_lsl": s.last_error_t_lsl,
+            "slew": {"w_per_s": self.slew_w_per_s, "update_interval_s": self._slew_interval},
         }
 
     # ---- sender ------------------------------------------------------------------
 
     async def _sender(self) -> None:
         while True:
+            if self._ramp is not None:
+                await self._ramp_step()
+                if self._ramp is None:
+                    self._wake.set()  # the ramp ended or was cancelled while parked: re-check for a pending target
+                continue
             await self._wake.wait()
             self._wake.clear()
-            if not self.pending:
+            if self._ramp is not None or not self.pending:
                 continue
             wait = self._last_send + self._min_interval - self._now()
             if wait > 0:
                 await self._sleep(wait)
-            if not self.pending:
-                continue  # link lost, or the latest request equals what is confirmed
+            if self._ramp is not None or not self.pending:
+                continue  # a ramp started, the link was lost, or the latest request equals what is confirmed
             target = self.state.requested_w  # read after the wait: latest wins
             if self._requests_since_send > 1:
                 log.debug("coalesced %d target(s); sending %d W", self._requests_since_send - 1, target)
@@ -244,7 +300,49 @@ class Controller:
             self._last_send = self._now()
             await self._send(target)
 
+    async def _ramp_step(self) -> None:
+        """Wait for the ramp's next update (or a new request / rate change), then send it."""
+        ramp = self._ramp
+        assert ramp is not None
+        self._wake.clear()
+        due = max(min(self._last_update_t + self._slew_interval, ramp.end_t), self._last_send + self._min_interval)
+        delay = due - self._now()
+        if delay > 0 and await self._sleep_or_wake(delay):
+            return  # woken: the ramp or the rate changed, recompute
+        if self._ramp is not ramp:
+            return
+        if self.state.link != "ready":
+            self._ramp = None  # nothing to ramp while the link is down
+            return
+        now = self._now()
+        self._last_update_t = now
+        final = now >= ramp.end_t - RAMP_END_TOLERANCE_S
+        value = ramp.target_w if final else self.clamp(round(ramp.value_at(now)))
+        if final:
+            self._ramp = None
+        if value == self._sent_w and self.state.confirmed_w == value:
+            return  # rounds to what the trainer already holds
+        self._requests_since_send = 0
+        self._last_send = now
+        await self._send(value)
+
+    async def _sleep_or_wake(self, seconds: float) -> bool:
+        """Sleep up to ``seconds`` with the injected sleep; True if woken early by _wake."""
+        sleeper = asyncio.ensure_future(self._sleep(seconds))
+        waker = asyncio.ensure_future(self._wake.wait())
+        try:
+            done, _ = await asyncio.wait({sleeper, waker}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (sleeper, waker):
+                task.cancel()
+            await asyncio.gather(sleeper, waker, return_exceptions=True)
+        if waker in done:
+            self._wake.clear()
+            return True
+        return False
+
     async def _send(self, target: int) -> None:
+        self._sent_w = target
         epoch = self.state.link_epoch
         try:
             await self._link.command(p.set_target_power(target))
@@ -269,6 +367,7 @@ class Controller:
                 self._wake.set()
             return
         self._link_failures = 0
+        self._rejections = 0
         self._confirm(target, epoch)
         log.debug("target %d W confirmed", target)
 
@@ -285,6 +384,8 @@ class Controller:
         s.link = "ready"
         s.link_epoch += 1
         s.requested_w = 0
+        self._ramp = None
+        self._sent_w = 0
         s.confirmed_w = 0
         s.confirmed_t_lsl = self._now()
         self._link_failures = 0
@@ -304,6 +405,8 @@ class Controller:
         s = self.state
         s.link = "reconnecting"
         s.requested_w = 0
+        self._ramp = None
+        self._sent_w = 0
         s.confirmed_w = None
         s.confirmed_t_lsl = None
         self._set_error(f"link lost: {reason}; target reset to 0 W")

@@ -264,3 +264,70 @@ def test_busy_service_is_retried_at_the_retry_rate_even_if_ui_requests_on_connec
         finally:
             w.stop()
     assert 2 <= len(connects) <= 5, len(connects)
+
+
+def slew_reply(request):
+    if request["cmd"] == "slew":
+        return {"ok": True, "slew_w_per_s": float(request["w_per_s"])}
+    return default_reply(request)
+
+
+def test_slew_requested_before_connect_is_sent_on_connect_before_targets():
+    ev = Events()
+    with StubService(slew_reply) as svc:
+        w = PowerWorker(ev, port=svc.port, poll_s=0.02)
+        w.request_slew(20)
+        w.start()
+        try:
+            assert ev.wait("slew_ok") == 20.0
+            w.request(180)
+            ev.wait("set_ok")
+        finally:
+            w.stop()
+        writes = [r for r in svc.requests if r["cmd"] != "read"]
+        assert writes[0] == {"cmd": "slew", "w_per_s": 20.0}
+        assert writes[1] == {"cmd": "set", "watts": 180}
+
+
+def test_slew_resent_after_reconnect():
+    ev = Events()
+    state = {"dropped": False}
+
+    def reply(request):
+        if request["cmd"] == "read" and not state["dropped"]:
+            state["dropped"] = True
+            return None  # close the connection
+        return slew_reply(request)
+
+    with StubService(reply) as svc:
+        w = PowerWorker(ev, port=svc.port, poll_s=0.02, retry_s=0.02)
+        w.request_slew(15)
+        w.start()
+        try:
+            ev.wait("slew_ok")
+            ev.wait("service_down")
+            ev.wait("service_connected")
+            assert ev.wait("slew_ok") == 15.0
+        finally:
+            w.stop()
+        assert [r for r in svc.requests if r["cmd"] == "slew"] == [{"cmd": "slew", "w_per_s": 15.0}] * 2
+
+
+def test_slew_error_posted_and_connection_kept():
+    ev = Events()
+
+    def reply(request):
+        if request["cmd"] == "slew":
+            return {"ok": False, "error": "invalid_slew", "detail": "w_per_s must be a number 0..1000"}
+        return default_reply(request)
+
+    with StubService(reply) as svc:
+        w = PowerWorker(ev, port=svc.port, poll_s=0.02)
+        w.start()
+        try:
+            ev.wait("status")
+            w.request_slew(5000)
+            assert ev.wait("slew_error") == "invalid_slew: w_per_s must be a number 0..1000"
+            ev.wait("status")  # still connected and polling
+        finally:
+            w.stop()
