@@ -132,11 +132,20 @@ Arguments: `--ftms-config` (default `ftms.json`), `--cps-config` (default
 `DEFAULT_PORT`), `--debug` (forwarded to both services), plus pass-through
 dashboard options.
 
-Children are started with `sys.executable` so the active env is used:
+The services are started through their installed console scripts, resolved
+from the wrapper's own environment — `sysconfig.get_path("scripts")`
+(`bin/` on POSIX, `Scripts\` on Windows), never a `PATH` search — so the
+same env is used and the real entry points are exercised:
 
-- FTMS: `python -c "import sys; from wahoo_lsl.ftms.cli import main; sys.exit(main())" serve -c <ftms-config>`
-- CPS: `python -m wahoo_lsl run -c <cps-config>`
-- Dashboard: `python -m wahoo_lsl.dashboard.app --port … --log-dir …`
+- FTMS: `<scripts>/wahoo-ftms serve -c <ftms-config>`
+- CPS: `<scripts>/wahoo-lsl run -c <cps-config>`
+- Dashboard: `sys.executable -m wahoo_lsl.dashboard.app --port … --log-dir …`
+
+If either script is missing from the scripts directory, the wrapper starts
+nothing and exits **2** with a message to run `pip install -e .` in that env.
+(On Windows the scripts are `.exe` launchers that run Python as a child; the
+group-wide `CTRL_BREAK_EVENT` reaches both, and the launcher ends its child
+when terminated.)
 
 Start-up order:
 
