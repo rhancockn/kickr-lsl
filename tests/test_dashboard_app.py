@@ -187,3 +187,32 @@ def test_main_rejects_bad_arguments(argv):
     with pytest.raises(SystemExit) as info:
         app_mod.main(argv)
     assert info.value.code == 2
+
+
+def test_bad_event_is_skipped_and_later_events_apply(dash, caplog):
+    pump(dash, ("cps_event", None), ("cps_bad", 7))
+    assert "bad lines: 7" in dash.app.status_text.get()
+    assert any(r.levelname == "ERROR" and "cps_event" in r.getMessage() for r in caplog.records)
+
+
+def test_pump_stays_armed_after_handler_raises(dash, monkeypatch):
+    def boom(kind, payload):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(dash.app, "handle", boom)
+    dash.events.put(("status", None))
+    dash.app._pump()
+    dash.app.request_close()
+    dash.app._pump()
+    assert dash.worker.stopped == 1
+
+
+def test_draw_failure_does_not_stop_redraws(dash, monkeypatch):
+    def boom(points):
+        raise RuntimeError("draw failed")
+
+    monkeypatch.setattr(dash.app.graphs["target"], "draw", boom)
+    before = dash.app._redraw_id
+    dash.app._redraw()
+    assert dash.app._redraw_id != before
+    assert dash.app.graphs["power"].canvas.find_withtag("all") != ()  # later graphs still drew

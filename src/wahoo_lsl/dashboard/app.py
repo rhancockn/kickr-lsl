@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import queue
 import signal
 import sys
@@ -20,6 +21,8 @@ from .graph import Graph
 from .logtail import LogFollower
 from .metrics import DEFAULT_CIRCUMFERENCE_M, CpsDeriver, History, SweepClock
 from .power import PowerWorker
+
+log = logging.getLogger(__name__)
 
 PUMP_MS = 100
 REDRAW_MS = 1000
@@ -185,29 +188,39 @@ class Dashboard:
     def _pump(self) -> None:
         if self._closing:
             return
-        while True:
-            try:
-                kind, payload = self.events.get_nowait()
-            except queue.Empty:
-                break
-            self.handle(kind, payload)
-        if self._cps_arrival is not None and self._monotonic() - self._cps_arrival > STALE_S:
-            for var in self.cps_values.values():
-                var.set(DASH)
-            self.cps_state.set(f"CPS: stale (no samples for {STALE_S:.0f} s)")
-            self._cps_arrival = None
-        if self._close_requested:
-            self.close()
-            return
-        self._pump_id = self.root.after(PUMP_MS, self._pump)
+        try:
+            while True:
+                try:
+                    kind, payload = self.events.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self.handle(kind, payload)
+                except Exception:
+                    log.exception("dashboard: bad %s event skipped", kind)
+            if self._cps_arrival is not None and self._monotonic() - self._cps_arrival > STALE_S:
+                for var in self.cps_values.values():
+                    var.set(DASH)
+                self.cps_state.set(f"CPS: stale (no samples for {STALE_S:.0f} s)")
+                self._cps_arrival = None
+        finally:
+            if self._close_requested:
+                self.close()
+            else:
+                self._pump_id = self.root.after(PUMP_MS, self._pump)
 
     def _redraw(self) -> None:
         if self._closing:
             return
-        self._sweep.advance(self._clock())
-        for key, graph in self.graphs.items():
-            graph.draw(self.histories[key].points())
-        self._redraw_id = self.root.after(REDRAW_MS, self._redraw)
+        try:
+            self._sweep.advance(self._clock())
+            for key, graph in self.graphs.items():
+                try:
+                    graph.draw(self.histories[key].points())
+                except Exception:
+                    log.exception("dashboard: drawing %s graph failed", key)
+        finally:
+            self._redraw_id = self.root.after(REDRAW_MS, self._redraw)
 
     def request_close(self) -> None:
         """Safe from a signal handler: the next pump closes the window."""
