@@ -76,7 +76,7 @@ class Dashboard:
         self.slider = tk.Scale(ctl, from_=0, to=max_watts, orient="horizontal", resolution=1, length=420,
                                command=self._on_slider)
         self.slider.pack(side="left", fill="x", expand=True, padx=6)
-        self.zero_button = tk.Button(ctl, text="0 W", command=lambda: self._set_target(0))
+        self.zero_button = tk.Button(ctl, text="0 W", command=self._on_zero_button)
         self.zero_button.pack(side="left")
 
         self.target_text = tk.StringVar(value=f"requested {DASH} · confirmed {DASH}")
@@ -116,6 +116,10 @@ class Dashboard:
 
     def _on_slider(self, value: str) -> None:
         self._send(int(float(value)))
+
+    def _on_zero_button(self) -> None:
+        self._last_sent = None  # always send, even if 0 was the last value
+        self._set_target(0)
 
     def _set_target(self, watts: int) -> None:
         self.slider.set(watts)

@@ -221,3 +221,10 @@ def test_draw_failure_does_not_stop_redraws(dash, monkeypatch):
     dash.app._redraw()
     assert dash.app._redraw_id != before
     assert dash.app.graphs["power"].canvas.find_withtag("all") != ()  # later graphs still drew
+
+
+def test_zero_button_sends_even_if_zero_was_last_sent(dash):
+    dash.app._on_slider("0")
+    dash.app.zero_button.invoke()
+    dash.root.update()
+    assert dash.worker.requests == [0, 0]
