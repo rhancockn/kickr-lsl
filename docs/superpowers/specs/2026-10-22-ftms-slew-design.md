@@ -7,8 +7,9 @@ Extends: `docs/superpowers/specs/2026-10-21-kickr-ftms-control-design.md`
 
 ## Purpose
 
-Make the FTMS control service move to each new target power gradually, at a
-configurable slew rate (W/s), instead of stepping straight to it. Intermediate
+Make the FTMS control service move up to each higher target power gradually,
+at a configurable slew rate (W/s), instead of stepping straight to it;
+decreases are still sent immediately. Intermediate
 setpoints are sent to the trainer at a configurable interval (default 10 s) so
 the KICKR's own ERG ramp smooths each step. The rate is set per client at
 runtime (`set_slew_rate`) and shown/editable in the dashboard. A slew rate of

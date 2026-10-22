@@ -31,7 +31,7 @@ class FtmsSettings:
     max_rate_hz: float = 2.0
     ack_timeout_s: float = 1.0
     max_watts: int | None = None
-    slew_w_per_s: float = 10.0  # 0 = no slew (each target sent directly)
+    slew_w_per_s: float = 10.0  # increases ramp at this rate; decreases and 0 = sent directly
     slew_update_interval_s: float = 10.0
 
 

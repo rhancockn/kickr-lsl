@@ -52,7 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     set_p.add_argument(
         "--slew", type=float, default=None,
-        help="slew rate in W/s for this run (0 = immediate; default: the service's configured rate)",
+        help="slew rate in W/s for increases in this run (decreases are always immediate; 0 = no ramp; "
+        "default: the service's configured rate)",
     )
     for p in (read_p, set_p):
         p.add_argument("--host", default=DEFAULT_HOST, help=f"service host (default {DEFAULT_HOST})")

@@ -40,7 +40,7 @@ class TargetState(NamedTuple):
 
 
 class SlewState(NamedTuple):
-    w_per_s: float  # 0 = targets are sent directly
+    w_per_s: float  # ramp rate for increases; decreases and 0 = sent directly
     update_interval_s: float
 
 
@@ -106,7 +106,7 @@ class KickrClient:
         return self._request({"cmd": "set", "watts": _whole_watts(watts)}, lambda r: int(r["target_w"]))
 
     def set_slew_rate(self, w_per_s: float) -> float:
-        """Set this connection's slew rate in W/s (0 = targets go straight to the trainer).
+        """Set this connection's slew rate in W/s for increases (0 = no ramp; decreases always go straight to the trainer).
 
         Returns the accepted rate. Resets to the service default when the client disconnects.
         bool, non-numbers (TypeError) and NaN/infinity (ValueError) are rejected without sending;
