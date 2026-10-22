@@ -254,3 +254,45 @@ def test_loopback_real_outlet_reaches_an_inlet():
     finally:
         inlet.close_stream()
         sink.stop()
+
+
+def _break(outlet):
+    def broken(rows, stamps):
+        raise RuntimeError("push failed")
+
+    outlet.push_chunk = broken
+
+
+def test_push_failure_before_device_change_still_switches_outlet():
+    factory = Factory()
+    sink = LslSink(cfg(), factory)
+    sink.handle_batch([connected(), features()])
+    old = factory.outlets[0]
+    _break(old)
+    with pytest.raises(RuntimeError):
+        sink.handle_batch(
+            [
+                sample(1.0, {"power_w": 1}),
+                connected(address="AA:BB:CC:DD:EE:01"),
+                features(),
+                sample(2.0, {"power_w": 2}),
+            ]
+        )
+    old_obj, new = factory.outlets
+    assert old_obj is old
+    assert new.info.source_id() == "KICKR-CPS-ddee01"
+    assert [r[0] for r in rows(new)] == [2.0]
+    sink.handle_batch([sample(3.0, {"power_w": 3})])
+    assert [r[0] for r in rows(new)] == [2.0, 3.0]
+    assert rows(old) == []
+
+
+def test_stop_releases_outlet_even_if_flush_fails():
+    factory = Factory()
+    sink = LslSink(cfg(), factory)
+    sink.handle_batch([connected(), features()])
+    _break(factory.outlets[0])
+    with pytest.raises(RuntimeError):
+        sink.handle_batch([sample(1.0, {"power_w": 1})])
+    sink.stop()
+    assert sink._outlet is None

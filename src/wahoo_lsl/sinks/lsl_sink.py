@@ -97,24 +97,40 @@ class LslSink(Sink):
         self.handle_batch([item])
 
     def handle_batch(self, items: list[Sample | Event]) -> None:
+        # Every item is processed even if one fails, so the outlet identity always
+        # follows the device; the first error is re-raised for the SinkRunner to log.
+        first: Exception | None = None
+        for item in items:
+            try:
+                self._handle_item(item)
+            except Exception as exc:
+                first = first or exc
         try:
-            for item in items:
-                if isinstance(item, Sample):
-                    if self._outlet is not None and item.parse_error is None:
-                        self._rows.append(_row(item, self._keys))
-                        self._stamps.append(item.t_lsl)
-                elif item.kind == "connected":
-                    self._connected = item.detail
-                elif item.kind == "features":
-                    self._flush()
-                    self._open(item.detail)
-        finally:
             self._flush()
+        except Exception as exc:
+            first = first or exc
+        if first is not None:
+            raise first
+
+    def _handle_item(self, item: Sample | Event) -> None:
+        if isinstance(item, Sample):
+            if self._outlet is not None and item.parse_error is None:
+                self._rows.append(_row(item, self._keys))
+                self._stamps.append(item.t_lsl)
+        elif item.kind == "connected":
+            self._connected = item.detail
+        elif item.kind == "features":
+            try:
+                self._flush()
+            finally:
+                self._open(item.detail)
 
     def stop(self) -> None:
-        self._flush()
-        self._outlet = None
-        self._identity = None
+        try:
+            self._flush()
+        finally:
+            self._outlet = None
+            self._identity = None
 
     def _flush(self) -> None:
         if not self._rows:
