@@ -14,6 +14,7 @@ dev = ["pytest>=8"]
 [project.scripts]
 wahoo-lsl = "wahoo_lsl.cli:main"
 wahoo-ftms = "wahoo_lsl.ftms.cli:main"
+wahoo-dashboard = "wahoo_lsl.dashboard.launcher:main"
 
 [build-system]
 requires = ["setuptools>=64"]
