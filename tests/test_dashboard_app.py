@@ -1,3 +1,4 @@
+import gc
 import queue
 from types import SimpleNamespace
 
@@ -21,6 +22,8 @@ def tk_root():
         root.destroy()
     except tk.TclError:
         pass
+    del root
+    gc.collect()
 
 
 class FakeWorker:
@@ -59,6 +62,8 @@ def dash(tk_root):
     ns = SimpleNamespace(app=d, events=events, lsl=lsl, mono=mono, root=tk_root, worker=worker, follower=follower)
     yield ns
     d.close()
+    ns.__dict__.clear()
+    del d
 
 
 def pump(ns, *items):

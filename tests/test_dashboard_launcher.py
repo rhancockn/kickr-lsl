@@ -1,4 +1,3 @@
-import gc
 import io
 import socket
 import sys
@@ -14,14 +13,6 @@ from wahoo_lsl.dashboard.launcher import LauncherError, Supervisor, Timings, bui
 
 FAKE = str(Path(__file__).with_name("dashboard_fake_child.py"))
 FAST = Timings(port_wait_s=5.0, cps_early_exit_s=0.3, grace_s=5.0, kill_after_s=2.0, poll_s=0.05)
-
-
-@pytest.fixture(autouse=True)
-def collect_garbage_in_main_thread():
-    # Earlier Tk tests can leave cyclic Tcl-backed objects behind; if the cyclic GC first runs in
-    # one of this module's worker threads, Tcl aborts the process ("deleted by the wrong thread").
-    gc.collect()
-    yield
 
 
 def free_port():

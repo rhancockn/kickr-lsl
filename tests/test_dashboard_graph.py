@@ -1,3 +1,5 @@
+import gc
+
 import pytest
 
 from wahoo_lsl.dashboard.graph import Graph, nice_ceiling, segments
@@ -16,6 +18,8 @@ def tk_root():
         root.destroy()
     except tk.TclError:
         pass
+    del root
+    gc.collect()
 
 
 def test_segments_break_on_none_and_gaps():
