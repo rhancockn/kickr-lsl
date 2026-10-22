@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from ..clock import now_lsl
 from . import DEFAULT_HOST, DEFAULT_PORT
 from .client import KickrClient, KickrError, Status
 
@@ -48,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     set_p.add_argument(
         "--hold", type=float, default=0.0, help="keep the target for this many seconds before exiting (default 0)"
     )
+    set_p.add_argument(
+        "--slew", type=float, default=None,
+        help="slew rate in W/s for this run (0 = immediate; default: the service's configured rate)",
+    )
     for p in (read_p, set_p):
         p.add_argument("--host", default=DEFAULT_HOST, help=f"service host (default {DEFAULT_HOST})")
         p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"service port (default {DEFAULT_PORT})")
@@ -60,6 +65,10 @@ def format_status(st: Status) -> str:
     if t.confirmed_w != t.requested_w:
         confirmed = "n/a" if t.confirmed_w is None else f"{t.confirmed_w} W"
         target += f" (confirmed {confirmed}{', pending' if t.pending else ''})"
+    if t.setpoint_w is not None and t.setpoint_w != t.requested_w:
+        target += f" setpoint={t.setpoint_w} W"
+    if st.slew is not None:
+        target += f" slew={st.slew.w_per_s:g} W/s"
     if st.power.watts is None:
         power = "n/a"
     elif st.power.age_s is None:
@@ -85,7 +94,7 @@ def run_client_command(args: argparse.Namespace) -> int:
             if args.command == "read":
                 print(format_status(client.read()))
                 return EXIT_OK
-            return _set(client, args.watts, args.timeout, args.hold)
+            return _set(client, args.watts, args.timeout, args.hold, args.slew)
     except KickrError as e:
         print(f"wahoo-ftms: service error {e.code}: {e.detail}", file=sys.stderr)
         return EXIT_SERVICE_ERROR
@@ -96,19 +105,27 @@ def run_client_command(args: argparse.Namespace) -> int:
         return EXIT_INTERRUPTED
 
 
-def _set(client: KickrClient, watts: int, timeout: float, hold: float) -> int:
+def _set(client: KickrClient, watts: int, timeout: float, hold: float, slew: float | None = None) -> int:
+    if slew is not None:
+        client.set_slew_rate(slew)
     print("before: " + format_status(client.read()))
     accepted = client.set_target_power(watts)
     if accepted != watts:
         print(f"note: {watts} W was clamped to {accepted} W")
-    deadline = time.monotonic() + timeout
+    deadline = None
     while True:
         status = client.read()
+        if deadline is None:  # allow the whole ramp on top of --timeout
+            ramp_end = status.target.ramp_end_t_lsl
+            ramp_s = 0.0 if ramp_end is None else max(0.0, ramp_end - now_lsl())
+            deadline = time.monotonic() + timeout + ramp_s
+            if ramp_s > 0:
+                print(f"ramping to {accepted} W over {ramp_s:.0f} s")
         if status.target.confirmed_w == accepted and not status.target.pending:
             break
         if time.monotonic() >= deadline:
             print("after:  " + format_status(status))
-            print(f"wahoo-ftms: {accepted} W not confirmed within {timeout:g} s", file=sys.stderr)
+            print(f"wahoo-ftms: {accepted} W not confirmed within {timeout:g} s (+ ramp time)", file=sys.stderr)
             return EXIT_NOT_CONFIRMED
         time.sleep(POLL_INTERVAL_S)
     print("after:  " + format_status(status))

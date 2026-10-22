@@ -11,8 +11,9 @@ import pytest
 from ftms_fakes import FakeFtmsBackend
 from ftms_stub import StubService, snapshot
 
+from wahoo_lsl import clock
 from wahoo_lsl.ftms.cli import _serve, build_parser, format_status, main
-from wahoo_lsl.ftms.client import KickrClient, PowerReading, Status, TargetState
+from wahoo_lsl.ftms.client import KickrClient, PowerReading, SlewState, Status, TargetState
 from wahoo_lsl.ftms.config import parse_ftms_config
 
 
@@ -285,3 +286,54 @@ def test_client_ctrl_c_returns_130(monkeypatch, argv):
     monkeypatch.setattr(KickrClient, "read", interrupt)
     with StubService(lambda r: snapshot()) as svc:
         assert main([*argv, "--port", str(svc.port)]) == 130
+
+
+def test_parser_set_slew():
+    args = build_parser().parse_args(["set", "150", "--slew", "20"])
+    assert args.slew == 20.0
+    assert build_parser().parse_args(["set", "150"]).slew is None
+
+
+def test_format_status_with_ramp_and_slew():
+    st = Status(
+        "ready", 1, TargetState(250, 200, True, 1.0, 210, 30.0), PowerReading(None, None, None), None, None,
+        SlewState(10.0, 10.0),
+    )
+    assert format_status(st) == (
+        "link=ready epoch=1 target=250 W (confirmed 200 W, pending) setpoint=210 W slew=10 W/s power=n/a last_error=-"
+    )
+    idle = Status("ready", 1, TargetState(0, 0, False, 1.0, 0, None), PowerReading(None, None, None), None, None,
+                  SlewState(0.0, 10.0))
+    assert format_status(idle) == "link=ready epoch=1 target=0 W slew=0 W/s power=n/a last_error=-"
+
+
+def test_set_with_slew_sends_slew_first(capsys):
+    def reply(request):
+        if request["cmd"] == "slew":
+            return {"ok": True, "slew_w_per_s": float(request["w_per_s"])}
+        if request["cmd"] == "set":
+            return {"ok": True, "target_w": request["watts"], "clamped": False}
+        return snapshot(requested=150, confirmed=150)
+
+    with StubService(reply) as svc:
+        assert main(["set", "150", "--slew", "0", "--port", str(svc.port)]) == 0
+        assert [r["cmd"] for r in svc.requests] == ["slew", "read", "set", "read"]
+        assert svc.requests[0] == {"cmd": "slew", "w_per_s": 0}
+
+
+def test_set_waits_for_ramp_beyond_timeout(capsys):
+    state = {"reads_after_set": 0, "set": False}
+
+    def reply(request):
+        if request["cmd"] == "set":
+            state["set"] = True
+            return {"ok": True, "target_w": 150, "clamped": False}
+        if not state["set"]:
+            return snapshot()
+        state["reads_after_set"] += 1
+        if state["reads_after_set"] < 6:  # ~0.5 s of polling at 0.1 s
+            return snapshot(requested=150, confirmed=0, pending=True, setpoint=50, ramp_end=clock.now_lsl() + 0.6)
+        return snapshot(requested=150, confirmed=150)
+
+    with StubService(reply) as svc:
+        assert main(["set", "150", "--timeout", "0.2", "--port", str(svc.port)]) == 0

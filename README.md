@@ -98,11 +98,21 @@ wahoo-ftms serve -c ftms.json           # connect, take control, ERG at 0 W; Ctr
 wahoo-ftms serve -c ftms.json --debug   # log every control-point write/response and notification
 wahoo-ftms read                         # one status line
 wahoo-ftms set 150 --hold 30            # read, set 150 W, wait for confirmation, read back, hold 30 s
+wahoo-ftms set 250 --slew 20           # ramp at 20 W/s (0 = immediate) and wait for the final target
 ```
 
 The trainer goes back to 0 W whenever the client disconnects (including when `wahoo-ftms set`
 exits), on any service error, and on shutdown. After a BLE drop the service reconnects and sets
 0 W; `link_epoch` increases and the client must send its target again.
+
+**Slew.** By default the service ramps to each new target at `ftms.slew_w_per_s` (10 W/s), sending
+an interpolated setpoint every `ftms.slew_update_interval_s` (10 s) so the KICKR's own ERG ramp smooths
+each step: 100 → 250 W sends 200 W after 10 s and 250 W after 15 s; a change smaller than one
+interval's worth is sent once, when its ramp ends. A new target mid-ramp continues from the current
+setpoint. `max_rate_hz` still limits how often anything is sent. Set `"slew_w_per_s": 0` in
+`ftms.json` (or call `set_slew_rate(0)`) for the old behaviour: each target goes straight to the
+trainer. A client's rate lasts until it disconnects. Disconnects, BLE drops and shutdown always go to
+0 W immediately, without a ramp.
 
 A second Ctrl-C while `serve` is shutting down forces an immediate exit; the spin-down to 0 W
 may then not complete.
@@ -118,13 +128,15 @@ from wahoo_lsl.ftms.client import KickrClient
 
 with KickrClient() as kickr:            # 127.0.0.1:47610
     kickr.set_target_power(150)         # returns immediately with the accepted value
-    print(kickr.read_target_power())    # TargetState(requested_w, confirmed_w, pending, t_lsl)
+    kickr.set_slew_rate(20)             # W/s for this connection; 0 = immediate
+    print(kickr.read_target_power())    # TargetState(requested_w, confirmed_w, pending, t_lsl; also setpoint_w, ramp_end_t_lsl)
     print(kickr.read_power())           # PowerReading(watts, t_lsl, age_s)
 # leaving the block disconnects -> service spins down to 0 W
 ```
 
-Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts":150}` and
-`{"cmd":"read"}`; errors are `{"ok":false,"error":"bad_request|invalid_watts|link_down|busy","detail":...}`.
+Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts":150}` ,
+`{"cmd":"slew","w_per_s":20}` and `{"cmd":"read"}`; errors are
+`{"ok":false,"error":"bad_request|invalid_watts|invalid_slew|link_down|busy","detail":...}`.
 
 ### Manual hardware checklist (FTMS)
 
@@ -136,6 +148,8 @@ Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts"
 6. Open the Wahoo app or Zwift and let it take control: "control permission lost" warning, reconnect, 0 W.
 7. Run `wahoo-lsl run -c config.json` at the same time: both connect and work (the KICKR accepts multiple BLE centrals).
 8. Ctrl-C the service while holding a target: "spin-down (shutdown): 0 W confirmed", exit 0.
+9. With the default slew: `wahoo-ftms set 250 --hold 20` from 100 W while pedalling: `--debug` service log shows 200 W at ~+10 s and 250 W at ~+15 s.
+10. `"slew_w_per_s": 0` in ftms.json: `wahoo-ftms set 150` is applied within ~2 s as before.
 
 ## Test dashboard (`wahoo-dashboard`)
 
