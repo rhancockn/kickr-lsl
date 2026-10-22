@@ -78,22 +78,29 @@ Samples that fail to parse keep `raw` and add `parse_error`.
   `speed_kmh` (if the device reports wheel revolutions) and `cadence_rpm` (if crank revolutions). Text/flag fields are
   encoded (`torque_source` wheel=0/crank=1, `offset_compensation` false=0/true=1); absent values are NaN.
   Units and types are in `desc/channels`.
-- **Metadata:** `desc/acquisition` (software, version, clock), `desc/device` (name, address, sensor location,
+- **Metadata:** `desc/acquisition` (software, version, clock, timestamp meaning, nominal rate), `desc/device` (name, address, sensor location,
   CP feature bits, Device Information fields), `desc/derivation` (`wheel_circumference_m` from
   `derive.wheel_circumference_m`, default 2.105 m, and the derivation constants).
 - The stream appears once the device is connected and stays up across BLE reconnects to the same device.
+- liblsl prints its own INFO lines (e.g. `common.cpp ... INFO| git:...`) to stderr; they are harmless. On Windows the first run may show a firewall prompt for python.exe — allow it on private networks or LSL consumers on other machines cannot see the stream.
 
 **Timing.** Each sample's timestamp is its `t_lsl` (BLE notification arrival, same clock as the log). The KICKR
 notifies at ≈ 0.9998 Hz with ±0.1 s delivery jitter, and gaps (disconnects, parse errors) are not filled. Use the
 timestamps, not sample index ÷ rate (that drifts ≈ 0.7 s/h and misaligns after gaps). pyxdf's default
 `dejitter_timestamps=True` replaces timestamps of regular streams with a linear fit; pass `False` for raw arrival times.
 
-Quick check while `run` is going:
+If the wheel or cranks stop for longer than the sensor's event-time wrap (32 s wheel, 64 s crank), the first revolution afterwards only re-primes the calculation, so speed/cadence resume one notification later.
+
+Quick check while `run` is going (save as `lsl_check.py`, run `python lsl_check.py KICKR-CPS-f24bfa`):
 
 ```python
+import sys
 import pylsl
-(info,) = pylsl.resolve_byprop("type", "CPS", timeout=10)
-inlet = pylsl.StreamInlet(info)
+source_id = sys.argv[1]  # from the "LSL outlet <source_id>: ..." log line, e.g. KICKR-CPS-f24bfa
+streams = pylsl.resolve_byprop("source_id", source_id, timeout=10)
+if not streams:
+    sys.exit(f"no LSL stream with source_id {source_id}")
+inlet = pylsl.StreamInlet(streams[0])
 print(inlet.info().as_xml())
 while True:
     sample, ts = inlet.pull_sample()
