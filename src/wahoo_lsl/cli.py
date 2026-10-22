@@ -85,8 +85,10 @@ def format_features(info: DeviceInfo, measurements: Sequence[str]) -> str:
     lines = [
         f"Device:  {info.name or '?'}   ({info.address_kind}: {info.address})",
         f"Sensor location: {info.sensor_location or 'not reported'}",
-        f"Feature bits (0x{f.raw:08X}):",
     ]
+    for key, value in info.device_info.items():
+        lines.append(f"{key.replace('_', ' ').capitalize()}: {value}")
+    lines.append(f"Feature bits (0x{f.raw:08X}):")
     for name in FEATURE_BITS.values():
         lines.append(f"  [{'x' if f.flags[name] else ' '}] {name}")
     lines.append(f"  {DISTRIBUTED_SYSTEM_SUPPORT} = {f.flags[DISTRIBUTED_SYSTEM_SUPPORT]}")

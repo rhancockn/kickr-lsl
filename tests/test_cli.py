@@ -257,3 +257,10 @@ def test_main_unwritable_diag_log_exit_2(tmp_path, capsys):
     p = write_config(tmp_path)
     assert main(["run", "-c", str(p), "--diag-log", str(blocker / "diag.log")], backend=FakeBackend()) == 2
     assert "diag-log" in capsys.readouterr().err
+
+
+def test_format_features_prints_device_information():
+    info = DeviceInfo(
+        "KICKR", "X", "uuid", parse_features(b"\x00\x00\x00\x00"), None, {"model_number": "KICKR V6"}
+    )
+    assert "Model number: KICKR V6" in format_features(info, []).splitlines()

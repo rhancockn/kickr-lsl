@@ -17,6 +17,16 @@ CPS_SERVICE_UUID = _uuid16(0x1818)
 CP_MEASUREMENT_UUID = _uuid16(0x2A63)
 CP_FEATURE_UUID = _uuid16(0x2A65)
 SENSOR_LOCATION_UUID = _uuid16(0x2A5D)
+DEVICE_INFORMATION_SERVICE_UUID = _uuid16(0x180A)
+# Device Information Service string characteristics, in display order.
+DEVICE_INFORMATION_FIELDS: dict[str, str] = {
+    _uuid16(0x2A29): "manufacturer",
+    _uuid16(0x2A24): "model_number",
+    _uuid16(0x2A25): "serial_number",
+    _uuid16(0x2A27): "hardware_revision",
+    _uuid16(0x2A26): "firmware_revision",
+    _uuid16(0x2A28): "software_revision",
+}
 
 
 class ParseError(ValueError):

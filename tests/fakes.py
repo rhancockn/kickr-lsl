@@ -8,7 +8,13 @@ from types import SimpleNamespace
 from bleak.exc import BleakError
 
 from wahoo_lsl.ble import ScanResult
-from wahoo_lsl.cps import CP_FEATURE_UUID, CP_MEASUREMENT_UUID, CPS_SERVICE_UUID, SENSOR_LOCATION_UUID
+from wahoo_lsl.cps import (
+    CP_FEATURE_UUID,
+    CP_MEASUREMENT_UUID,
+    CPS_SERVICE_UUID,
+    DEVICE_INFORMATION_SERVICE_UUID,
+    SENSOR_LOCATION_UUID,
+)
 
 KICKR = SimpleNamespace(name="KICKR CORE 1234", address="AA:BB:CC:DD:EE:01")
 WHEEL_AND_CRANK = struct.pack("<I", 0b1100)
@@ -22,12 +28,24 @@ class FakeService:
         return None
 
 
+class FakeDisService:
+    def __init__(self, values: dict) -> None:
+        self._values = values
+
+    def get_characteristic(self, uuid: str):
+        return SimpleNamespace(uuid=uuid) if uuid in self._values else None
+
+
 class FakeServices:
-    def __init__(self, has_cps: bool) -> None:
-        self._has_cps = has_cps
+    def __init__(self, backend: "FakeBackend") -> None:
+        self._backend = backend
 
     def get_service(self, uuid: str):
-        return FakeService() if uuid == CPS_SERVICE_UUID and self._has_cps else None
+        if uuid == CPS_SERVICE_UUID and self._backend.has_cps:
+            return FakeService()
+        if uuid == DEVICE_INFORMATION_SERVICE_UUID and self._backend.device_info is not None:
+            return FakeDisService(self._backend.device_info)
+        return None
 
     def get_characteristic(self, uuid: str):
         if uuid == SENSOR_LOCATION_UUID:  # CSC + CPS both carry Sensor Location, as on real trainers
@@ -41,7 +59,7 @@ class FakeClient:
         self.device = device
         self._disconnected_callback = disconnected_callback
         self.is_connected = False
-        self.services = FakeServices(backend.has_cps)
+        self.services = FakeServices(backend)
         self.notify_callback = None
 
     async def connect(self) -> None:
@@ -58,6 +76,13 @@ class FakeClient:
             return bytearray(self.backend.feature_bytes)
         if uuid == SENSOR_LOCATION_UUID:
             return bytearray([13])  # Rear hub
+        dis = self.backend.device_info or {}
+        if uuid in dis:
+            if uuid in self.backend.dis_hang:
+                await asyncio.Event().wait()
+            if uuid in self.backend.dis_fail:
+                raise BleakError("simulated read failure")
+            return bytearray(dis[uuid])
         raise AssertionError(f"unexpected read {uuid}")
 
     async def start_notify(self, char, callback) -> None:
@@ -108,6 +133,9 @@ class FakeBackend:
         hang_stop_notify: bool = False,
         hang_disconnect: bool = False,
         on_discover=None,
+        device_info=None,
+        dis_fail=(),
+        dis_hang=(),
     ) -> None:
         if scan_results is None:
             scan_results = [ScanResult(KICKR.name, KICKR.address, -50, True, KICKR)]
@@ -123,6 +151,9 @@ class FakeBackend:
         self.hang_stop_notify = hang_stop_notify
         self.hang_disconnect = hang_disconnect
         self.on_discover = on_discover  # called when a scan starts (lets tests sync a signal)
+        self.device_info = device_info  # char UUID -> bytes; None = service absent
+        self.dis_fail = set(dis_fail)
+        self.dis_hang = set(dis_hang)
         self.clients: list[FakeClient] = []
         self.address_lookups: list[str] = []
 
