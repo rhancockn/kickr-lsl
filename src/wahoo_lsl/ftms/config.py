@@ -87,7 +87,6 @@ def _parse_ftms(d: dict) -> FtmsSettings:
     if (
         isinstance(slew, bool)
         or not isinstance(slew, (int, float))
-        or not math.isfinite(slew)
         or not 0 <= slew <= MAX_SLEW_W_PER_S
     ):
         raise ConfigError(f"ftms.slew_w_per_s must be a number 0..{MAX_SLEW_W_PER_S:g} (0 = no slew), got {slew!r}")

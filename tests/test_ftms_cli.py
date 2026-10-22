@@ -337,3 +337,11 @@ def test_set_waits_for_ramp_beyond_timeout(capsys):
 
     with StubService(reply) as svc:
         assert main(["set", "150", "--timeout", "0.2", "--port", str(svc.port)]) == 0
+
+
+@pytest.mark.parametrize("bad", ["nan", "inf", "-1", "1001"])
+def test_set_rejects_invalid_slew_with_usage_error(bad, capsys):
+    with pytest.raises(SystemExit) as exc:
+        main(["set", "150", "--slew", bad])
+    assert exc.value.code == 2
+    assert "--slew" in capsys.readouterr().err

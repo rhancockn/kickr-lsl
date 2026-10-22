@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 from contextlib import suppress
 from typing import Any, Protocol
 
@@ -135,8 +134,7 @@ class ControlServer:
             if (
                 isinstance(rate, bool)
                 or not isinstance(rate, (int, float))
-                or not math.isfinite(rate)
-                or not 0 <= rate <= MAX_SLEW_W_PER_S
+                or not 0 <= rate <= MAX_SLEW_W_PER_S  # also rejects NaN/inf; no float() so huge ints cannot overflow
             ):
                 return error_reply(
                     "invalid_slew", f"w_per_s must be a number 0..{MAX_SLEW_W_PER_S:g}, got {rate!r}"

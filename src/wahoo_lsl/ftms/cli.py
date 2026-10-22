@@ -17,6 +17,7 @@ from typing import Any
 from ..clock import now_lsl
 from . import DEFAULT_HOST, DEFAULT_PORT
 from .client import KickrClient, KickrError, Status
+from .slew import MAX_SLEW_W_PER_S
 
 log = logging.getLogger("wahoo_lsl.ftms")
 
@@ -79,7 +80,10 @@ def format_status(st: Status) -> str:
 
 
 def main(argv: Sequence[str] | None = None, *, backend: Any = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "set" and args.slew is not None and not 0 <= args.slew <= MAX_SLEW_W_PER_S:
+        parser.error(f"--slew must be a number 0..{MAX_SLEW_W_PER_S:g}, got {args.slew!r}")
     if args.command == "serve":
         return serve(args.config, debug=args.debug, diag_log=args.diag_log, backend=backend)
     return run_client_command(args)

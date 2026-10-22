@@ -106,6 +106,7 @@ def test_slew_values():
     [
         ({"slew_w_per_s": -1}, "ftms.slew_w_per_s"),
         ({"slew_w_per_s": 1001}, "ftms.slew_w_per_s"),
+        ({"slew_w_per_s": 10**400}, "ftms.slew_w_per_s"),
         ({"slew_w_per_s": True}, "ftms.slew_w_per_s"),
         ({"slew_w_per_s": "10"}, "ftms.slew_w_per_s"),
         ({"slew_w_per_s": float("nan")}, "ftms.slew_w_per_s"),

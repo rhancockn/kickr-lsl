@@ -294,7 +294,7 @@ def test_slew_command_round_trip():
     assert ctl.slews == [20, 2.5]
 
 
-@pytest.mark.parametrize("value", [-1, 1001, True, "10", None, [1]])
+@pytest.mark.parametrize("value", [-1, 1001, True, "10", None, [1], 10**400])
 def test_slew_command_rejects_bad_values(value):
     ctl = StubController()
 
