@@ -216,8 +216,9 @@ class Controller:
         if start == target:
             self._ramp = None
             return
+        if self._ramp is None:
+            self._last_update_t = now  # starting from idle; a replacing ramp keeps the update cadence
         self._ramp = Ramp(start, target, self.slew_w_per_s, now, self._slew_interval)
-        self._last_update_t = now
 
     def clamp(self, watts: int) -> int:
         r = self._link.power_range
@@ -278,6 +279,8 @@ class Controller:
         while True:
             if self._ramp is not None:
                 await self._ramp_step()
+                if self._ramp is None:
+                    self._wake.set()  # the ramp ended or was cancelled while parked: re-check for a pending target
                 continue
             await self._wake.wait()
             self._wake.clear()
@@ -300,11 +303,14 @@ class Controller:
         ramp = self._ramp
         assert ramp is not None
         self._wake.clear()
-        due = max(ramp.next_update_at(self._last_update_t), self._last_send + self._min_interval)
+        due = max(min(self._last_update_t + self._slew_interval, ramp.end_t), self._last_send + self._min_interval)
         delay = due - self._now()
         if delay > 0 and await self._sleep_or_wake(delay):
             return  # woken: the ramp or the rate changed, recompute
-        if self._ramp is not ramp or self.state.link != "ready":
+        if self._ramp is not ramp:
+            return
+        if self.state.link != "ready":
+            self._ramp = None  # nothing to ramp while the link is down
             return
         now = self._now()
         self._last_update_t = now
@@ -359,6 +365,7 @@ class Controller:
                 self._wake.set()
             return
         self._link_failures = 0
+        self._rejections = 0
         self._confirm(target, epoch)
         log.debug("target %d W confirmed", target)
 

@@ -700,3 +700,104 @@ def test_snapshot_reports_ramp():
     assert snap["target"]["ramp_end_t_lsl"] == 125.0
     assert snap["target"]["pending"] is True
     assert snap["slew"] == {"w_per_s": 10.0, "update_interval_s": 10.0}
+
+
+def make_parked(ftms=None):
+    """Controller whose injected sleep blocks forever, so the sender stays parked in _sleep_or_wake."""
+    ctl, link, clock = make(ftms=ftms)
+    never = asyncio.Event()
+
+    async def blocked_sleep(seconds: float) -> None:
+        await never.wait()
+
+    ctl._sleep = blocked_sleep
+    return ctl, link, clock
+
+
+def test_rate_to_zero_while_sender_parked_sends_target():
+    ctl, link, clock = make_parked(SLEW)
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(250)
+        await settle()  # sender is now parked waiting for the first ramp update
+        clock.t = 105.0
+        ctl.set_slew_rate(0)
+        await until(lambda: ctl.state.confirmed_w == 250)
+
+    run(scenario)
+    assert link.sent == [(105.0, 250)]
+
+
+def test_retarget_to_current_setpoint_while_parked_sends_target():
+    ctl, link, clock = make_parked(SLEW)
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(250)
+        await settle()
+        clock.t = 105.0  # setpoint 50 W
+        ctl.request_target(50)
+        assert ctl._ramp is None and ctl.pending
+        await until(lambda: ctl.state.confirmed_w == 50)
+
+    run(scenario)
+    assert link.sent == [(105.0, 50)]
+
+
+def test_frequent_retargets_still_update_every_interval():
+    ctl, link, clock = make(ftms=SLEW)
+
+    async def scenario():
+        await ctl.start()  # t=100, 0 W
+        ctl.request_target(400)  # ramp from idle: update anchor 100
+        clock.t = 104.0
+        ctl.request_target(410)  # setpoint 40; anchor stays 100
+        clock.t = 108.0
+        ctl.request_target(420)  # setpoint 80; ramp 80 -> 420
+        await until(lambda: link.sent)
+
+    run(scenario)
+    assert link.sent[0] == (110.0, 100)
+
+
+def test_rejected_ramp_update_ramp_continues():
+    ctl, link, clock = make(ftms={"slew_w_per_s": 10, "slew_update_interval_s": 2})
+
+    async def scenario():
+        await ctl.start()
+        link.command_results = [CommandRejected(0x05, 0x04)]
+        ctl.request_target(100)
+        await until(lambda: ctl.state.confirmed_w == 100)
+
+    run(scenario)
+    assert link.sent == [(102.0, 20), (104.0, 40), (106.0, 60), (108.0, 80), (110.0, 100)]
+
+
+def test_rejections_spread_across_a_ramp_do_not_exhaust_the_final_retry():
+    ctl, link, clock = make(ftms={"slew_w_per_s": 10, "slew_update_interval_s": 2})
+    rej = CommandRejected(0x05, 0x04)
+
+    async def scenario():
+        await ctl.start()
+        link.command_results = [rej, None, rej, None, rej]  # updates 20, 60, and the final 100 rejected
+        ctl.request_target(100)
+        await until(lambda: ctl.state.confirmed_w == 100)
+
+    run(scenario)
+    assert watts(link)[-2:] == [100, 100]
+    assert len(link.sent) == 6
+
+
+def test_ramp_step_with_link_not_ready_drops_ramp():
+    ctl, link, clock = make(ftms=SLEW)
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(250)
+        ctl.state.link = "reconnecting"
+        await ctl._ramp_step()
+
+    run(scenario)
+    assert ctl._ramp is None
+    assert link.sent == []

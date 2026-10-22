@@ -5,14 +5,14 @@ import math
 from dataclasses import dataclass
 
 MAX_SLEW_W_PER_S = 1000.0
-_GRID_EPS = 1e-9  # a time on (or a rounding error below) an update grid point counts as that point
 
 
 @dataclass(frozen=True)
 class Ramp:
     """Linear move from start_w to target_w at rate_w_per_s, starting at t0.
 
-    Updates are due at t0 + k * interval_s (k >= 1) and finally at end_t.
+    The controller sends updates every interval_s (measured from its previous update, not from t0)
+    and a final one at end_t; this class only describes the line.
     """
 
     start_w: float
@@ -38,8 +38,3 @@ class Ramp:
             return float(self.start_w)
         step = self.rate_w_per_s * (t - self.t0)
         return self.start_w + step if self.target_w > self.start_w else self.start_w - step
-
-    def next_update_at(self, after_t: float) -> float:
-        """The first update time strictly after ``after_t``, capped at end_t."""
-        k = max(1, math.floor((after_t - self.t0) / self.interval_s + _GRID_EPS) + 1)
-        return min(self.t0 + k * self.interval_s, self.end_t)

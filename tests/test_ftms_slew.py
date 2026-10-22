@@ -26,23 +26,9 @@ def test_ramp_down_values():
     assert r.value_at(20.0) == 100.0
 
 
-def test_next_update_on_interval_grid_capped_at_end():
-    r = Ramp(100, 250, 10.0, 0.0, 10.0)
-    assert r.next_update_at(0.0) == 10.0
-    assert r.next_update_at(3.0) == 10.0
-    assert r.next_update_at(10.0) == 15.0
-    assert r.next_update_at(15.0) == 15.0
-
-
-def test_next_update_tolerates_float_error_at_grid_points():
-    r = Ramp(0, 1000, 1.0, 0.1, 0.1)
-    assert r.next_update_at(0.1 + 0.1) == pytest.approx(0.3)  # not 0.2 again
-
-
 def test_ramp_shorter_than_interval_updates_once_at_end():
     r = Ramp(100, 130, 10.0, 5.0, 10.0)
     assert r.end_t == 8.0
-    assert r.next_update_at(5.0) == 8.0
 
 
 def test_fractional_start():
