@@ -6,8 +6,9 @@ import socketserver
 import threading
 
 
-def snapshot(requested=0, confirmed=0, pending=False, watts=None, link="ready", epoch=1, last_error=None):
-    return {
+def snapshot(requested=0, confirmed=0, pending=False, watts=None, link="ready", epoch=1, last_error=None,
+             setpoint=None, ramp_end=None, slew=None):
+    reply = {
         "ok": True,
         "link": link,
         "link_epoch": epoch,
@@ -16,6 +17,12 @@ def snapshot(requested=0, confirmed=0, pending=False, watts=None, link="ready", 
         "last_error": last_error,
         "last_error_t_lsl": None if last_error is None else 12.0,
     }
+    if setpoint is not None or ramp_end is not None:
+        reply["target"]["setpoint_w"] = requested if setpoint is None else setpoint
+        reply["target"]["ramp_end_t_lsl"] = ramp_end
+    if slew is not None:
+        reply["slew"] = {"w_per_s": slew, "update_interval_s": 10.0}
+    return reply
 
 
 class _Handler(socketserver.StreamRequestHandler):
