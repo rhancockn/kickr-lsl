@@ -211,24 +211,31 @@ def test_main_missing_scripts_exits_2(tmp_path, monkeypatch, capsys):
 # --- confirm_zero ----------------------------------------------------------
 
 
+def zero_replies(read, set_reply=None, slew_reply=None):
+    def reply(r):
+        if r["cmd"] == "slew":
+            return slew_reply(r) if slew_reply else {"ok": True, "slew_w_per_s": float(r["w_per_s"])}
+        if r["cmd"] == "set":
+            return set_reply(r) if set_reply else {"ok": True, "target_w": 0, "clamped": False}
+        return read
+    return reply
+
+
 def test_confirm_zero_true_when_target_confirmed():
-    with StubService(lambda r: {"ok": True, "target_w": 0, "clamped": False} if r["cmd"] == "set"
-                     else snapshot(requested=0, confirmed=0)) as svc:
+    with StubService(zero_replies(snapshot(requested=0, confirmed=0))) as svc:
         assert confirm_zero("127.0.0.1", svc.port, timeout_s=2.0, poll_s=0.02) is True
         assert {"cmd": "set", "watts": 0} in svc.requests
 
 
 def test_confirm_zero_false_after_timeout_when_not_confirmed():
-    with StubService(lambda r: {"ok": True, "target_w": 0, "clamped": False} if r["cmd"] == "set"
-                     else snapshot(requested=0, confirmed=120)) as svc:
+    with StubService(zero_replies(snapshot(requested=0, confirmed=120))) as svc:
         started = time.monotonic()
         assert confirm_zero("127.0.0.1", svc.port, timeout_s=0.3, poll_s=0.02) is False
         assert 0.25 <= time.monotonic() - started < 2.0
 
 
 def test_confirm_zero_false_when_link_not_ready():
-    with StubService(lambda r: {"ok": True, "target_w": 0, "clamped": False} if r["cmd"] == "set"
-                     else snapshot(requested=0, confirmed=120, link="lost")) as svc:
+    with StubService(zero_replies(snapshot(requested=0, confirmed=120, link="lost"))) as svc:
         started = time.monotonic()
         assert confirm_zero("127.0.0.1", svc.port, timeout_s=2.0, poll_s=0.02) is False
         assert time.monotonic() - started < 1.0
@@ -242,17 +249,60 @@ def test_confirm_zero_unreachable_is_false_and_quick():
 
 def test_confirm_zero_retries_while_busy():
     state = {"n": 0}
+    busy = {"ok": False, "error": "busy", "detail": "another client is connected"}
 
     def reply(r):
-        if r["cmd"] == "set":
+        if r["cmd"] != "read" and state["n"] < 2:
             state["n"] += 1
-            if state["n"] < 3:
-                return {"ok": False, "error": "busy", "detail": "another client is connected"}
-            return {"ok": True, "target_w": 0, "clamped": False}
-        return snapshot(requested=0, confirmed=0)
+            return busy
+        return zero_replies(snapshot(requested=0, confirmed=0))(r)
 
     with StubService(reply) as svc:
         assert confirm_zero("127.0.0.1", svc.port, timeout_s=3.0, poll_s=0.02) is True
+
+
+def test_confirm_zero_disables_slew_before_zero():
+    with StubService(zero_replies(snapshot(requested=0, confirmed=0))) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=2.0, poll_s=0.02) is True
+        writes = [r for r in svc.requests if r["cmd"] != "read"]
+        assert writes[:2] == [{"cmd": "slew", "w_per_s": 0}, {"cmd": "set", "watts": 0}]
+
+
+def test_confirm_zero_works_with_service_without_slew():
+    old = {"ok": False, "error": "bad_request", "detail": "unknown cmd 'slew'; expected 'set' or 'read'"}
+    with StubService(zero_replies(snapshot(requested=0, confirmed=0), slew_reply=lambda r: old)) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=2.0, poll_s=0.02) is True
+
+
+def test_build_commands_passes_slew(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "WIN", False)
+    for name in ("wahoo-ftms", "wahoo-lsl"):
+        (tmp_path / name).write_text("")
+    args = launcher.build_parser().parse_args(["--slew", "15"])
+    cmds = build_commands(args, "127.0.0.1", 47610, tmp_path)
+    assert cmds["dash"][-2:] == ["--slew", "15"]
+
+
+def test_main_defaults_dashboard_slew_to_ftms_config(tmp_path, monkeypatch):
+    cfg = tmp_path / "ftms.json"
+    cfg.write_text('{"device": {"name": "KICKR"}, "ftms": {"slew_w_per_s": 7}}')
+    for name in ("wahoo-ftms", "wahoo-lsl"):
+        (tmp_path / name).write_text("")
+    monkeypatch.setattr(launcher, "WIN", False)
+    monkeypatch.setattr(launcher.sysconfig, "get_path", lambda name: str(tmp_path))
+    seen = {}
+
+    class FakeSupervisor:
+        def __init__(self, commands, *rest):
+            seen["dash"] = commands["dash"]
+
+        def run(self):
+            return 0
+
+    monkeypatch.setattr(launcher, "Supervisor", FakeSupervisor)
+    monkeypatch.setattr(launcher.signal, "signal", lambda *a: None)
+    assert launcher.main(["--ftms-config", str(cfg)]) == 0
+    assert seen["dash"][-2:] == ["--slew", "7"]
 
 
 def test_confirm_zero_false_if_service_closes_connection():

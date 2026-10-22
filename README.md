@@ -173,6 +173,13 @@ The exit code is the first non-zero exit among the three (a child that fails dur
 start-up returns its own code), or 2 for a config problem, a missing script or the FTMS
 port not opening.
 
+The **Slew W/s** box sets the FTMS slew rate for the dashboard's connection (Apply); it
+starts at the FTMS config's `slew_w_per_s` (override with `wahoo-dashboard --slew W_PER_S`)
+and is re-sent whenever the dashboard reconnects. The slider and the 0 W button ramp at
+that rate; closing the dashboard (or stopping `wahoo-dashboard`) drops to 0 W immediately.
+Check: with slew 10 W/s, move the slider from 100 to 250 W: the target panel shows
+`setpoint` and `ramp N s`, and the confirmed-target graph steps at ~10 s and ~15 s.
+
 To open only the window against a service and logger that are already running:
 
 ```bash

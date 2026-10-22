@@ -54,9 +54,18 @@ def _clean_code(returncode: int | None, signalled: bool) -> int | None:
     return returncode
 
 
+def _disable_slew(client: KickrClient) -> None:
+    """Make the shutdown 0 W immediate. A service without slew answers bad_request: nothing to disable."""
+    try:
+        client.set_slew_rate(0)
+    except KickrError as e:
+        if e.code != "bad_request":
+            raise
+
+
 def confirm_zero(host: str, port: int, timeout_s: float = 3.0, poll_s: float = 0.1,
                  say: Callable[[str], None] = lambda msg: None) -> bool:
-    """Connect as a client, request 0 W and wait for the service to confirm it. Never raises."""
+    """Connect as a client, request an immediate 0 W (slew 0) and wait for the service to confirm it. Never raises."""
     deadline = time.monotonic() + timeout_s
     client = None
     try:
@@ -71,6 +80,7 @@ def confirm_zero(host: str, port: int, timeout_s: float = 3.0, poll_s: float = 0
                 say(f"service unreachable ({e}); cannot confirm 0 W")
                 return False
             try:
+                _disable_slew(client)
                 client.set_target_power(0)
                 break
             except (KickrError, OSError) as e:  # busy (dashboard still releasing) or closed: retry
@@ -123,7 +133,8 @@ def build_commands(args: argparse.Namespace, host: str, port: int,
         "cps": [str(cps), "run", "-c", str(args.cps_config), *debug],
         "dash": [sys.executable, "-m", "wahoo_lsl.dashboard.app", "--host", host, "--port", str(port),
                  "--log-dir", str(args.log_dir), "--max-watts", str(args.max_watts),
-                 "--circumference-m", str(args.circumference_m)],
+                 "--circumference-m", str(args.circumference_m),
+                 *([] if args.slew is None else ["--slew", f"{args.slew:g}"])],
     }
 
 
@@ -296,6 +307,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-watts", type=int, default=1000, help="dashboard slider maximum in W (default 1000)")
     p.add_argument("--circumference-m", type=float, default=DEFAULT_CIRCUMFERENCE_M,
                    help=f"wheel circumference for speed (default {DEFAULT_CIRCUMFERENCE_M})")
+    p.add_argument("--slew", type=float, default=None,
+                   help="initial dashboard slew rate in W/s (default: the FTMS config's slew_w_per_s)")
     return p
 
 
@@ -304,6 +317,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         ftms_cfg = load_ftms_config(args.ftms_config)
         settings = ftms_cfg.ftms
+        if args.slew is None:
+            args.slew = settings.slew_w_per_s
         commands = build_commands(args, settings.host, settings.port)
     except (ConfigError, LauncherError) as e:
         print(f"wahoo-dashboard: {e}", file=sys.stderr)
