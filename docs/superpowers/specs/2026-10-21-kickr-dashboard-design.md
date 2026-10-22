@@ -92,7 +92,9 @@ one `KickrClient`.
   `read()` every 0.5 s and post the `Status` to the UI queue.
 - A failed set (`KickrError` or `OSError`) posts the error and is **dropped**,
   not retried. `KickrError` from read is posted and the loop continues.
-  `OSError`/`ConnectionError` closes the client and goes back to reconnecting.
+  `OSError`/`ConnectionError` (or any other failure) closes the client and goes
+  back to reconnecting. A `busy` reply (another client holds the service)
+  also closes the client and retries every 1 s.
 - On (re)connect the worker posts `reconnected`; the UI moves the slider to 0
   (the service spun down when the previous connection dropped).
 - `stop()`: sends 0 W best-effort (1 s timeout), closes the client, joins.
@@ -113,7 +115,8 @@ Window, top to bottom:
 2. **Target panel**: requested / confirmed target (W), pending flag, link
    state, last error; graph of confirmed target.
 3. **CPS panels**: power (W), speed (km/h), cadence (rpm) — value + graph each.
-   Values older than **5 s** (by arrival) show "—" and a "stale" marker.
+   If no sample has arrived for **15 s** (longer than the logger's 10-sample
+   flush batches), values show "—" and a "stale" marker.
 4. **Status bar**: service state, followed log file name, bad-line count.
 
 Threads post `(kind, payload)` tuples to one `queue.Queue`; the Tk loop drains
@@ -128,9 +131,11 @@ destroy. CLI: `--host`, `--port`, `--log-dir` (default `logs`),
 ### launcher.py — `wahoo-dashboard`
 
 Arguments: `--ftms-config` (default `ftms.json`), `--cps-config` (default
-`config.json`), `--log-dir` (default `logs`), `--port` (default
-`DEFAULT_PORT`), `--debug` (forwarded to both services), plus pass-through
-dashboard options.
+`config.json`), `--log-dir` (default `logs`), `--debug` (forwarded to both
+services), plus pass-through dashboard options (`--max-watts`,
+`--circumference-m`). The FTMS host and port are read from the FTMS config
+with the existing `load_ftms_config` (read-only use), so they cannot drift
+from what the service binds; a config error exits **2** before anything starts.
 
 The services are started through their installed console scripts, resolved
 from the wrapper's own environment — `sysconfig.get_path("scripts")`
@@ -149,7 +154,8 @@ when terminated.)
 
 Start-up order:
 
-1. Start FTMS; wait up to **15 s** for its TCP port to accept connections.
+1. Start FTMS; wait up to **15 s** for its TCP port to accept connections
+   (the probe is a brief client connection the service logs and ignores).
    If it exits first, stop and exit with its code; on timeout stop it, exit 2.
 2. Start CPS logger. If it exits within **2 s**, stop FTMS and exit with its code.
 3. Start dashboard.
@@ -159,7 +165,8 @@ Each child's stdout/stderr is merged and relayed line by line with a
 
 Shutdown triggers: dashboard window closed, Ctrl-C/SIGTERM in the wrapper,
 or any child exiting. Order: **dashboard → FTMS → CPS**. Each child gets an
-interrupt (POSIX: SIGINT; Windows: `CTRL_BREAK_EVENT`, children started with
+interrupt (POSIX: SIGINT, children started in their own session so a
+terminal Ctrl-C reaches only the wrapper; Windows: `CTRL_BREAK_EVENT`, children started with
 `CREATE_NEW_PROCESS_GROUP`) and **20 s** to exit, then `terminate()`, then
 `kill()` after 5 s more. Because the dashboard closes first, its client
 disconnect makes the server spin down to 0 W before the server is signalled
@@ -176,7 +183,7 @@ else 0; a second Ctrl-C skips the grace periods.
 | Set fails | error shown, set dropped (never replayed) |
 | Dashboard reconnects to service | slider reset to 0 |
 | No CPS log yet | "waiting for CPS log in <dir>" |
-| CPS data stale > 5 s | value "—", stale marker; graph gap |
+| No CPS sample for > 15 s | value "—", stale marker; graph gap (> 5 s between samples breaks the line) |
 | Corrupt log line | skipped, counted in status bar |
 | Child fails at start-up | others stopped, wrapper exits with its code |
 
