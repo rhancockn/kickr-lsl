@@ -18,6 +18,8 @@ class PowerWorker:
     """Sends the latest requested target and polls read(), posting results as (kind, payload).
 
     A value requested while disconnected, or a set that fails, is dropped and never replayed.
+    The last requested slew rate is (re)sent after every connect, because the service resets it when a client
+    disconnects.
     """
 
     def __init__(
@@ -36,6 +38,8 @@ class PowerWorker:
         self._factory = client_factory
         self._lock = threading.Lock()
         self._pending: int | None = None
+        self._slew: float | None = None
+        self._slew_dirty = False
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._client: Any = None
@@ -49,6 +53,12 @@ class PowerWorker:
     def request(self, watts: int) -> None:
         with self._lock:
             self._pending = int(watts)
+        self._wake.set()
+
+    def request_slew(self, w_per_s: float) -> None:
+        with self._lock:
+            self._slew = float(w_per_s)
+            self._slew_dirty = True
         self._wake.set()
 
     def stop(self, join_s: float = 5.0) -> None:
@@ -85,6 +95,7 @@ class PowerWorker:
             return False
         with self._lock:
             self._pending = None  # never replay a value chosen while disconnected
+            self._slew_dirty = self._slew is not None  # the service reset it on our last disconnect
         self._down_msg = None
         self._post(("service_connected", None))
         return True
@@ -106,17 +117,25 @@ class PowerWorker:
     def _send_pending(self) -> None:
         with self._lock:
             watts, self._pending = self._pending, None
-        if watts is None:
+            slew = self._slew if self._slew_dirty else None
+            self._slew_dirty = False
+        if slew is not None and not self._call("slew", self._client.set_slew_rate, slew, f"slew {slew:g} W/s"):
             return
+        if watts is not None:
+            self._call("set", self._client.set_target_power, watts, f"set {watts} W")
+
+    def _call(self, kind: str, fn: Callable[[Any], Any], value: Any, what: str) -> bool:
+        """Post <kind>_ok / <kind>_error; drop the connection on busy or I/O errors. True if still connected."""
         try:
-            self._post(("set_ok", self._client.set_target_power(watts)))
+            self._post((f"{kind}_ok", fn(value)))
         except KickrError as e:
-            self._post(("set_error", f"{e.code}: {e.detail}"))
+            self._post((f"{kind}_error", f"{e.code}: {e.detail}"))
             if e.code == "busy":
                 self._drop("service busy: another client is connected")
         except Exception as e:
-            self._post(("set_error", f"set {watts} W failed: {_describe(e)}"))
+            self._post((f"{kind}_error", f"{what} failed: {_describe(e)}"))
             self._drop(f"connection lost ({_describe(e)})")
+        return self._client is not None
 
     def _read(self) -> None:
         try:
