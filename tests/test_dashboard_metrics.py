@@ -142,3 +142,11 @@ def test_shared_clock_clears_all_histories_together():
     assert clock.advance(300.0) is True
     assert a.points() == [] and b.points() == []
     assert clock.advance(301.0) is False
+
+
+def test_uses_shared_deriver_reprime_after_event_time_wrap_gap():
+    # Shared wahoo_lsl.derive behaviour: after a gap longer than the 32 s wheel
+    # event-time wrap, the next change only re-primes (no bogus speed).
+    d = CpsDeriver()
+    d.update(sample(0.0, wheel=(10, 0)))
+    assert d.update(sample(40.0, wheel=(11, 100))).speed_kmh is None
