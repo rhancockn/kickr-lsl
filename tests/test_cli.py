@@ -7,11 +7,12 @@ import signal
 import struct
 import sys
 import threading
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
 
 import pytest
-from fakes import KICKR, FakeBackend
+from fakes import KICKR, FakeBackend, FakeOutlet
 
 from wahoo_lsl.ble import DeviceInfo, ScanResult
 import wahoo_lsl.ble as ble_mod
@@ -33,6 +34,7 @@ def write_config(tmp_path: Path, **overrides) -> Path:
         "measurements": ["power", "accumulated_torque"],
         "log": {"path": str(tmp_path / "logs" / "cps_{start:%Y%m%d}.jsonl")},
         "reconnect": {"enabled": False},
+        "lsl": {"enabled": False},
     }
     cfg.update(overrides)
     p = tmp_path / "config.json"
@@ -264,3 +266,46 @@ def test_format_features_prints_device_information():
         "KICKR", "X", "uuid", parse_features(b"\x00\x00\x00\x00"), None, {"model_number": "KICKR V6"}
     )
     assert "Model number: KICKR V6" in format_features(info, []).splitlines()
+
+
+def test_run_session_streams_to_lsl(tmp_path):
+    outlets: list = []
+
+    def factory(info):
+        outlets.append(FakeOutlet(info))
+        return outlets[-1]
+
+    cfg = parse_config(json.loads(write_config(tmp_path, lsl={"enabled": True}).read_text(encoding="utf-8")))
+    backend = FakeBackend(sessions=[([POWER, WHEEL], True)])
+    code = run_session(cfg, backend=backend, start=datetime(2026, 10, 20), outlet_factory=factory)
+    assert code == 4
+    (outlet,) = outlets
+    assert outlet.info.source_id() == "KICKRCORE-CPS-ddee01"
+    # accumulated_torque is configured but unsupported -> no channel; wheel/crank fields not configured -> not pushed
+    chans = ET.fromstring(outlet.info.as_xml()).findall("desc/channels/channel")
+    assert [c.findtext("label") for c in chans] == ["power_w", "speed_kmh", "cadence_rpm"]
+    rows = [r for chunk, _ in outlet.chunks for r in chunk]
+    assert [r[0] for r in rows] == [200.0, 150.0]
+    samples = [r for r in read_log(tmp_path / "logs" / "cps_20261020.jsonl") if r["type"] == "sample"]
+    assert samples[0]["derived"] == {"speed_kmh": None, "cadence_rpm": None}
+
+
+def test_run_session_lsl_disabled_creates_no_outlet(tmp_path):
+    outlets: list = []
+    backend = FakeBackend(sessions=[([POWER], True)])
+    run_session(load_cfg(tmp_path), backend=backend, start=datetime(2026, 10, 20), outlet_factory=outlets.append)
+    assert outlets == []
+
+
+def test_run_session_lsl_failure_keeps_logging(tmp_path, caplog):
+    def factory(info):
+        raise RuntimeError("liblsl unavailable")
+
+    cfg = parse_config(json.loads(write_config(tmp_path, lsl={"enabled": True}).read_text(encoding="utf-8")))
+    backend = FakeBackend(sessions=[([POWER, POWER], True)])
+    with caplog.at_level(logging.ERROR):
+        code = run_session(cfg, backend=backend, start=datetime(2026, 10, 20), outlet_factory=factory)
+    assert code == 4  # same as without LSL: link dropped, reconnect disabled
+    records = read_log(tmp_path / "logs" / "cps_20261020.jsonl")
+    assert len([r for r in records if r["type"] == "sample"]) == 2
+    assert any("Cannot create LSL outlet" in r.getMessage() for r in caplog.records)

@@ -6,9 +6,10 @@ import asyncio
 import logging
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from .ble import (
     COMMS_ERRORS,
@@ -22,8 +23,9 @@ from .ble import (
 )
 from .config import Config, ConfigError, load_config
 from .cps import DISTRIBUTED_SYSTEM_SUPPORT, FEATURE_BITS
+from .derive import CpsDeriver
 from .pipeline import Pipeline, Sink, make_event
-from .sinks import ConsoleSink, LogSink, format_log_path
+from .sinks import ConsoleSink, LogSink, LslSink, format_log_path
 from .warn import WarnOnce
 
 log = logging.getLogger("wahoo_lsl")
@@ -139,6 +141,7 @@ def run_session(
     debug: bool = False,
     backend: BleBackend | None = None,
     start: datetime | None = None,
+    outlet_factory: Callable[[Any], Any] | None = None,
 ) -> int:
     log_path = format_log_path(cfg.log.path, start or datetime.now())
     try:  # pre-flight in the main thread so a bad path can never mean a run without a log
@@ -151,12 +154,18 @@ def run_session(
 
     warn = WarnOnce(log)
     sinks: list[Sink] = [LogSink(log_path, cfg.log.flush_every_n)]
+    if cfg.lsl.enabled:
+        sinks.append(LslSink(cfg, outlet_factory))
     if debug:
         sinks.append(ConsoleSink())
-    pipeline = Pipeline(sinks, cfg.measurements, warn, queue_warn_depth=cfg.queue_warn_depth)
+    deriver = CpsDeriver(cfg.derive.wheel_circumference_m)
+    pipeline = Pipeline(sinks, cfg.measurements, warn, queue_warn_depth=cfg.queue_warn_depth, deriver=deriver)
     pipeline.start()
     pipeline.put(make_event("clock_sync"))
     log.info("Logging samples to %s", log_path)
+    if cfg.lsl.enabled:
+        rate = f"{cfg.lsl.nominal_srate:g} Hz" if cfg.lsl.nominal_srate else "irregular"
+        log.info("LSL outlet enabled (nominal rate %s); it appears once the device is connected", rate)
 
     client = CpsClient(cfg, pipeline.put, warn, backend=backend)
     code, reason = EXIT_OK, "user"
