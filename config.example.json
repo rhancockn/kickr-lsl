@@ -15,5 +15,12 @@
     "max_attempts": 0,
     "backoff_s": [1, 2, 5, 10]
   },
-  "queue_warn_depth": 100
+  "queue_warn_depth": 100,
+  "lsl": {
+    "enabled": true,
+    "nominal_srate": 1.0
+  },
+  "derive": {
+    "wheel_circumference_m": 2.105
+  }
 }

@@ -5,7 +5,9 @@ import pytest
 
 from wahoo_lsl.config import (
     ConfigError,
+    DeriveConfig,
     DeviceConfig,
+    LslConfig,
     address_kind,
     load_config,
     parse_config,
@@ -49,6 +51,8 @@ def test_example_config_loads():
     assert cfg.reconnect.max_attempts == 0
     assert cfg.reconnect.backoff_s == (1.0, 2.0, 5.0, 10.0)
     assert cfg.queue_warn_depth == 100
+    assert cfg.lsl == LslConfig(enabled=True, nominal_srate=1.0)
+    assert cfg.derive == DeriveConfig(wheel_circumference_m=2.105)
 
 
 def test_defaults_applied():
@@ -60,6 +64,8 @@ def test_defaults_applied():
     assert cfg.reconnect.backoff_s == (1.0, 2.0, 5.0, 10.0)
     assert cfg.device.scan_timeout_s == 10.0
     assert cfg.queue_warn_depth == 100
+    assert cfg.lsl == LslConfig(enabled=True, nominal_srate=1.0)
+    assert cfg.derive == DeriveConfig(wheel_circumference_m=2.105)
 
 
 def test_name_is_stripped_and_mac_uuid_accepted():
@@ -103,6 +109,16 @@ def test_measurements_optional_when_not_required():
         (_set("reconnect.backoff_s", []), "backoff_s"),
         (_set("reconnect.backoff_s", [1, -2]), "backoff_s"),
         (_set("queue_warn_depth", 0), "queue_warn_depth"),
+        (_set("lsl", []), "'lsl' must be an object"),
+        (_set("lsl.extra", 1), "unknown key"),
+        (_set("lsl.enabled", "yes"), "lsl.enabled"),
+        (_set("lsl.nominal_srate", -1), "lsl.nominal_srate"),
+        (_set("lsl.nominal_srate", True), "lsl.nominal_srate"),
+        (_set("lsl.nominal_srate", float("inf")), "lsl.nominal_srate"),
+        (_set("derive.wheel_circumference_m", 0), "wheel_circumference_m"),
+        (_set("derive.wheel_circumference_m", float("nan")), "wheel_circumference_m"),
+        (_set("derive.wheel_circumference_m", float("inf")), "wheel_circumference_m"),
+        (_set("derive.spoke_count", 32), "unknown key"),
     ],
 )
 def test_invalid_configs_rejected(mutate, message):
@@ -164,3 +180,12 @@ def test_shared_section_parsers_are_public():
     with pytest.raises(ConfigError):
         section({"s": {"bad": 1}}, "s", {"good"})
     assert section({}, "s", {"good"}) == {}
+
+
+def test_lsl_and_derive_values():
+    d = base()
+    d["lsl"] = {"enabled": False, "nominal_srate": 0}
+    d["derive"] = {"wheel_circumference_m": 2.096}
+    cfg = parse_config(d)
+    assert cfg.lsl == LslConfig(enabled=False, nominal_srate=0.0)
+    assert cfg.derive == DeriveConfig(wheel_circumference_m=2.096)
