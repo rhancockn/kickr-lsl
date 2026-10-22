@@ -42,7 +42,10 @@ class _RevRate:
             return self._rate
         d_revs = (revs - self._last[0]) % self._rev_wrap
         d_ticks = (event_t - self._last[1]) % EVENT_T_WRAP
-        if d_revs and d_ticks:
+        if d_revs and d_ticks and t - self._last_change_t > EVENT_T_WRAP / self._ticks_per_s:
+            # Event time has wrapped while idle: delta ticks are ambiguous, so only re-prime.
+            self._last, self._last_change_t = (revs, event_t), t
+        elif d_revs and d_ticks:
             self._rate = d_revs * self._ticks_per_s / d_ticks
             self._last, self._last_change_t = (revs, event_t), t
         elif t - self._last_change_t >= ZERO_AFTER_S:

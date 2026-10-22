@@ -92,3 +92,19 @@ def test_reset_forgets_previous_counters():
 def test_invalid_circumference_rejected(c):
     with pytest.raises(ValueError):
         CpsDeriver(circumference_m=c)
+
+
+def test_event_after_longer_than_wrap_reprimes_instead_of_aliasing():
+    d = CpsDeriver()
+    d.update(0.0, fields(wheel=(0, 0)))
+    assert d.update(10.0, fields(wheel=(0, 0)))["speed_kmh"] == 0.0
+    assert d.update(40.0, fields(wheel=(1, 2048)))["speed_kmh"] == 0.0
+    assert d.update(41.0, fields(wheel=(2, 4096)))["speed_kmh"] == pytest.approx(DEFAULT_CIRCUMFERENCE_M * 3.6)
+
+
+def test_crank_event_after_longer_than_wrap_reprimes_instead_of_aliasing():
+    d = CpsDeriver()
+    d.update(0.0, fields(crank=(0, 0)))
+    assert d.update(10.0, fields(crank=(0, 0)))["cadence_rpm"] == 0.0
+    assert d.update(70.0, fields(crank=(1, 1024)))["cadence_rpm"] == 0.0
+    assert d.update(71.0, fields(crank=(2, 2048)))["cadence_rpm"] == pytest.approx(60.0)
