@@ -55,7 +55,8 @@ def _clean_code(returncode: int | None, signalled: bool) -> int | None:
 
 
 def _disable_slew(client: KickrClient) -> None:
-    """Make the shutdown 0 W immediate. A service without slew answers bad_request: nothing to disable."""
+    """Belt and braces: decreases are never slewed, but older services slew them, so set slew 0.
+    A service without slew answers bad_request: nothing to disable."""
     try:
         client.set_slew_rate(0)
     except KickrError as e:

@@ -105,7 +105,8 @@ The trainer goes back to 0 W whenever the client disconnects (including when `wa
 exits), on any service error, and on shutdown. After a BLE drop the service reconnects and sets
 0 W; `link_epoch` increases and the client must send its target again.
 
-**Slew.** By default the service ramps to each new target at `ftms.slew_w_per_s` (10 W/s), sending
+**Slew.** Only power increases are slewed; a decrease (including to 0 W) goes straight to the
+trainer. By default the service ramps up to each higher target at `ftms.slew_w_per_s` (10 W/s), sending
 an interpolated setpoint every `ftms.slew_update_interval_s` (10 s) so the KICKR's own ERG ramp smooths
 each step: 100 → 250 W sends 200 W after 10 s and 250 W after 15 s; a change smaller than one
 interval's worth is sent once, when its ramp ends. While a ramp runs, updates go out every
@@ -113,7 +114,7 @@ interval's worth is sent once, when its ramp ends. While a ramp runs, updates go
 without postponing the next update. `max_rate_hz` still limits how often anything is sent. Set `"slew_w_per_s": 0` in
 `ftms.json` (or call `set_slew_rate(0)`) for the old behaviour: each target goes straight to the
 trainer. A client's rate lasts until it disconnects. Disconnects, BLE drops and shutdown always go to
-0 W immediately, without a ramp.
+0 W immediately, without a ramp. A decrease sent mid-ramp cancels the ramp.
 
 A second Ctrl-C while `serve` is shutting down forces an immediate exit; the spin-down to 0 W
 may then not complete.
@@ -151,6 +152,7 @@ Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts"
 8. Ctrl-C the service while holding a target: "spin-down (shutdown): 0 W confirmed", exit 0.
 9. With the default slew: `wahoo-ftms set 250 --hold 20` from 100 W while pedalling: `--debug` service log shows 200 W at ~+10 s and 250 W at ~+15 s.
 10. `"slew_w_per_s": 0` in ftms.json: `wahoo-ftms set 150` is applied within ~2 s as before.
+11. With the default slew: `wahoo-ftms set 100 --hold 20` from 250 W: the decrease is sent at once (no ramp).
 
 ## Test dashboard (`wahoo-dashboard`)
 
@@ -176,8 +178,8 @@ port not opening.
 
 The **Slew W/s** box sets the FTMS slew rate for the dashboard's connection (Apply); it
 starts at the FTMS config's `slew_w_per_s` (override with `wahoo-dashboard --slew W_PER_S`)
-and is re-sent whenever the dashboard reconnects. The slider and the 0 W button ramp at
-that rate; closing the dashboard (or stopping `wahoo-dashboard`) drops to 0 W immediately.
+and is re-sent whenever the dashboard reconnects. Moving the slider up ramps at
+that rate; moving it down and the 0 W button are immediate; closing the dashboard (or stopping `wahoo-dashboard`) drops to 0 W immediately.
 Check: with slew 10 W/s, move the slider from 100 to 250 W: the target panel shows
 `setpoint` and `ramp N s`, and the confirmed-target graph steps at ~10 s and ~15 s.
 
@@ -188,8 +190,8 @@ python -m wahoo_lsl.dashboard.app --log-dir logs [--host 127.0.0.1] [--port 4761
 ```
 
 - **Slider:** sends the target as you drag (the service applies at most 2 changes per
-  second, latest wins). "0 W" ramps at the current slew rate like the slider (closing the
-  dashboard drops to 0 W immediately). When the dashboard (re)connects
+  second, latest wins). Moving it up ramps at the current slew rate; moving it down and "0 W" are sent immediately (closing the
+  dashboard also drops to 0 W immediately). When the dashboard (re)connects
   the slider resets to 0, matching the service's spin-down.
 - **Target panel:** requested and confirmed target read back from the service, link state
   and last error, with a graph of the confirmed target.

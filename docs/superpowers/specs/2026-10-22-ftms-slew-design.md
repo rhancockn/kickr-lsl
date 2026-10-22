@@ -18,7 +18,9 @@ runtime (`set_slew_rate`) and shown/editable in the dashboard. A slew rate of
 
 ### Ramp
 
-- Each `set` stores the final target T (clamped as today) and starts a ramp
+- Only increases are slewed: a target at or below the current setpoint is sent
+  directly (rate-limited by `max_rate_hz`), cancelling any running ramp.
+- Each `set` of a higher target stores the final target T (clamped as today) and starts a ramp
   from the current setpoint S to T at rate R (W/s), starting at t0 = now:
   duration `D = |T − S| / R`.
 - The current setpoint S is the interpolated ramp value at the moment of the
@@ -149,8 +151,8 @@ add `"slew_w_per_s": 0` for the old behaviour.
   `--slew` CLI option, default 10) plus an "Apply" button →
   `worker.request_slew`. Target panel text:
   `requested T W · setpoint S W · confirmed C W[ · pending][ · ramp Ns]`.
-  Graph unchanged (confirmed target). The slider and 0 W button go through
-  the ramp; only closing the dashboard (disconnect) drops to 0 W at once.
+  Graph unchanged (confirmed target). Moving the slider up goes through
+  the ramp; moving it down, the 0 W button and closing the dashboard (disconnect) are immediate.
 - `launcher.confirm_zero`: calls `set_slew_rate(0)` before `set_target_power(0)`
   so the shutdown drop stays immediate. `launcher` passes `--slew` through to
   the dashboard (default: the FTMS config's `slew_w_per_s`).
@@ -176,7 +178,8 @@ add `"slew_w_per_s": 0` for the old behaviour.
   new target mid-ramp starts from interpolated value; rate change mid-ramp
   (incl. to 0); skip of unchanged rounded value; `max_rate_hz` floor;
   clamp/step on intermediate values; spin-down/link loss/reset_slew cancel
-  the ramp; reset_slew restores default; snapshot fields. All existing
+  the ramp; decreases (idle, mid-ramp, parked sender, below setpoint but above
+  last sent) are sent directly and cancel the ramp; reset_slew restores default; snapshot fields. All existing
   controller tests run with `slew_w_per_s = 0` and stay unchanged.
 - Server: `slew` command ok/invalid cases, disconnect calls `reset_slew`
   before spin-down, `read` fields.
@@ -186,9 +189,9 @@ add `"slew_w_per_s": 0` for the old behaviour.
 - CLI: `set --slew` order of calls; extended confirmation wait; `read` text.
 - Dashboard: worker sends slew before target, re-sends slew after reconnect;
   spinbox Apply calls `request_slew`; target panel text; launcher
-  `confirm_zero` sets slew 0 before 0 W; launcher passes `--slew`.
+  `confirm_zero` sets slew 0 before 0 W (kept for older services; decreases are already immediate); launcher passes `--slew`.
 - Manual (README checklist): 100→250 W at 10 W/s steps at +10 s / +15 s;
-  `slew_w_per_s: 0` behaves as before; closing the dashboard drops to 0 W
+  `slew_w_per_s: 0` behaves as before; the slider down and the 0 W button are immediate; closing the dashboard drops to 0 W
   immediately.
 
 ## Out of scope
