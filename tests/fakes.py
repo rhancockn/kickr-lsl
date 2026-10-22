@@ -179,3 +179,14 @@ class FakeBackend:
         client = FakeClient(self, device, disconnected_callback)
         self.clients.append(client)
         return client
+
+
+class FakeOutlet:
+    """Stand-in for pylsl.StreamOutlet: records pushed chunks."""
+
+    def __init__(self, info) -> None:
+        self.info = info
+        self.chunks: list = []
+
+    def push_chunk(self, rows, timestamps) -> None:
+        self.chunks.append(([list(r) for r in rows], list(timestamps)))
