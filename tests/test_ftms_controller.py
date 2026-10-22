@@ -544,7 +544,7 @@ def test_short_ramp_single_send_at_end():
     assert link.sent == [(103.0, 30)]
 
 
-def test_ramp_down():
+def test_decrease_is_sent_directly_without_ramp():
     ctl, link, clock = make(ftms={"slew_w_per_s": 10, "slew_update_interval_s": 5})
 
     async def scenario():
@@ -553,11 +553,61 @@ def test_ramp_down():
         ctl.request_target(200)  # direct (slew 0)
         await until(lambda: ctl.state.confirmed_w == 200)
         ctl.set_slew_rate(10)
-        ctl.request_target(180)  # 200 -> 180: D = 2 s < interval
+        ctl.request_target(180)  # a decrease: not slewed, only rate-limited by max_rate_hz
+        assert ctl._ramp is None
         await until(lambda: ctl.state.confirmed_w == 180)
 
     run(scenario)
-    assert link.sent == [(100.0, 200), (102.0, 180)]
+    assert link.sent == [(100.0, 200), (100.5, 180)]
+
+
+def test_decrease_mid_ramp_is_immediate_and_cancels_ramp():
+    ctl, link, clock = make(ftms=SLEW)
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(250)
+        clock.t = 105.0  # setpoint 50 W
+        ctl.request_target(30)
+        await until(lambda: ctl.state.confirmed_w == 30)
+
+    run(scenario)
+    assert link.sent == [(105.0, 30)]
+    assert ctl._ramp is None
+
+
+def test_decrease_while_sender_parked_is_sent():
+    ctl, link, clock = make_parked(SLEW)
+
+    async def scenario():
+        await ctl.start()
+        ctl.request_target(250)
+        await settle()  # sender parked waiting for the first ramp update
+        clock.t = 105.0
+        ctl.request_target(30)
+        await until(lambda: ctl.state.confirmed_w == 30)
+
+    run(scenario)
+    assert link.sent == [(105.0, 30)]
+
+
+def test_decrease_below_setpoint_but_above_last_sent_is_immediate():
+    ctl, link, clock = make(ftms=SLEW)
+
+    async def scenario():
+        await ctl.start()
+        ctl.set_slew_rate(0)
+        ctl.request_target(100)
+        await until(lambda: ctl.state.confirmed_w == 100)  # sent at 100.0
+        ctl.set_slew_rate(10)
+        ctl.request_target(250)  # ramp 100 -> 250
+        clock.t = 103.0  # setpoint 130
+        ctl.request_target(120)  # below setpoint, above last sent: direct
+        await until(lambda: ctl.state.confirmed_w == 120)
+
+    run(scenario)
+    assert link.sent == [(100.0, 100), (103.0, 120)]
+    assert ctl._ramp is None
 
 
 def test_new_target_mid_ramp_starts_from_interpolated_value():

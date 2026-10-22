@@ -177,7 +177,8 @@ class Controller:
     # ---- client-facing ---------------------------------------------------------
 
     def request_target(self, watts: int) -> tuple[int, bool]:
-        """Store a new target (clamped), start a ramp if slewing, wake the sender. No BLE I/O."""
+        """Store a new target (clamped), ramp it if slewing and it is an increase (decreases are
+        sent directly), wake the sender. No BLE I/O."""
         if self.state.link != "ready":
             raise LinkDown(f"BLE link is {self.state.link}")
         accepted = self.clamp(watts)
@@ -190,7 +191,7 @@ class Controller:
         return accepted, accepted != watts
 
     def set_slew_rate(self, w_per_s: float) -> float:
-        """Set the slew rate (W/s; 0 = send targets directly). Restarts a running ramp from where it is."""
+        """Set the slew rate for increases (W/s; 0 = send targets directly). Restarts a running ramp from where it is."""
         rate = float(w_per_s)
         if not math.isfinite(rate) or not 0 <= rate <= MAX_SLEW_W_PER_S:
             raise ValueError(f"slew rate must be 0..{MAX_SLEW_W_PER_S:g} W/s, got {w_per_s!r}")
@@ -211,10 +212,11 @@ class Controller:
         return self._ramp.value_at(now) if self._ramp is not None else float(self._sent_w)
 
     def _start_ramp(self, target: int) -> None:
+        """Ramp up to ``target``; a target at or below the setpoint cancels any ramp (sent directly)."""
         now = self._now()
         start = self._setpoint(now)
-        if start == target:
-            self._ramp = None
+        if target <= start:
+            self._ramp = None  # only increases are slewed: the sender sends a decrease directly
             return
         if self._ramp is None:
             self._last_update_t = now  # starting from idle; a replacing ramp keeps the update cadence
