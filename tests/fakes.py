@@ -43,6 +43,8 @@ class FakeServices:
     def get_service(self, uuid: str):
         if uuid == CPS_SERVICE_UUID and self._backend.has_cps:
             return FakeService()
+        if uuid == DEVICE_INFORMATION_SERVICE_UUID and self._backend.dis_service_error:
+            raise BleakError("Multiple Services with this UUID")
         if uuid == DEVICE_INFORMATION_SERVICE_UUID and self._backend.device_info is not None:
             return FakeDisService(self._backend.device_info)
         return None
@@ -136,6 +138,7 @@ class FakeBackend:
         device_info=None,
         dis_fail=(),
         dis_hang=(),
+        dis_service_error: bool = False,
     ) -> None:
         if scan_results is None:
             scan_results = [ScanResult(KICKR.name, KICKR.address, -50, True, KICKR)]
@@ -154,6 +157,7 @@ class FakeBackend:
         self.device_info = device_info  # char UUID -> bytes; None = service absent
         self.dis_fail = set(dis_fail)
         self.dis_hang = set(dis_hang)
+        self.dis_service_error = dis_service_error  # get_service(DIS) raises, as with duplicate services
         self.clients: list[FakeClient] = []
         self.address_lookups: list[str] = []
 

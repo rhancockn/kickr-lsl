@@ -487,3 +487,8 @@ def test_connected_event_carries_device_info():
     asyncio.run(scenario())
     connected = next(i for i in items if isinstance(i, Event) and i.kind == "connected")
     assert connected.detail["device_info"] == {"manufacturer": "Wahoo Fitness", "model_number": "KICKR V6"}
+
+
+def test_device_information_service_lookup_error_is_empty():
+    client, _ = make_client(FakeBackend(device_info=DIS_VALUES, dis_service_error=True))
+    assert asyncio.run(client.read_info()).device_info == {}

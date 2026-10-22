@@ -379,7 +379,11 @@ class CpsClient:
 
 async def _read_device_information(client: Any) -> dict[str, str]:
     """Best-effort Device Information Service read; anything absent, empty or failing is skipped."""
-    service = client.services.get_service(DEVICE_INFORMATION_SERVICE_UUID)
+    try:
+        service = client.services.get_service(DEVICE_INFORMATION_SERVICE_UUID)
+    except COMMS_ERRORS as e:
+        log.debug("Device Information service not available: %r", e)
+        return {}
     if service is None:
         return {}
     out: dict[str, str] = {}
