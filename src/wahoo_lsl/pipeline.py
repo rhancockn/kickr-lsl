@@ -1,6 +1,6 @@
 """Queues, dispatcher and sink runners (spec §7).
 
-BLE callback -> ingest_q -> Dispatcher (parse, warn, fan-out) -> one queue + thread per Sink.
+BLE callback -> ingest_q -> Dispatcher (parse, derive, warn, fan-out) -> one queue + thread per Sink.
 Queues are unbounded: nothing is ever dropped. Items are immutable and shared by all sinks.
 """
 from __future__ import annotations
@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 
 from . import clock
 from .cps import ParseError, parse_measurement
+from .derive import CpsDeriver
 from .warn import WarnOnce
 
 log = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class Sample:
     flags: int | None  # None if the payload was too short to contain flags
     fields: dict  # ALL parsed output keys (no config filtering in MVP)
     parse_error: str | None = None
+    derived: dict = field(default_factory=dict)  # derive.CpsDeriver output; {} on parse errors
 
 
 class _Stop:
@@ -116,7 +118,7 @@ class SinkRunner(threading.Thread):
 
 
 class Dispatcher(threading.Thread):
-    """Parses RawSamples, applies warn-once availability checks, fans out to sink queues."""
+    """Parses RawSamples, derives speed/cadence, applies warn-once checks, fans out to sink queues."""
 
     def __init__(
         self,
@@ -127,6 +129,7 @@ class Dispatcher(threading.Thread):
         *,
         queue_warn_depth: int = 100,
         backlog_interval_s: float = 10.0,
+        deriver: CpsDeriver | None = None,
     ) -> None:
         super().__init__(name="dispatcher", daemon=True)
         self._ingest = ingest_q
@@ -137,6 +140,7 @@ class Dispatcher(threading.Thread):
         self._interval = backlog_interval_s
         self._unavailable: frozenset[str] = frozenset()
         self._last_backlog_warn: float | None = None
+        self._deriver = deriver if deriver is not None else CpsDeriver()
         self.parse_errors = 0
 
     def run(self) -> None:
@@ -180,6 +184,8 @@ class Dispatcher(threading.Thread):
             log.exception("Dispatcher failed processing an item; continuing")
 
     def _on_event(self, event: Event) -> Event:
+        if event.kind == "connected":
+            self._deriver.reset()  # precedes every connection's first sample; never derive across a link drop
         if event.kind == "features":
             self._unavailable = frozenset(event.detail.get("unavailable", ()))
         if event.kind == "stopped":
@@ -209,7 +215,8 @@ class Dispatcher(threading.Thread):
                 name,
                 m.flags,
             )
-        return Sample(raw.seq, raw.t_lsl, raw.t_wall_ns, raw_hex, m.flags, dict(m.values), None)
+        derived = self._deriver.update(raw.t_lsl, m.values)
+        return Sample(raw.seq, raw.t_lsl, raw.t_wall_ns, raw_hex, m.flags, dict(m.values), None, derived)
 
     def _check_backlog(self) -> None:
         depths = {"ingest": self._ingest.qsize(), **{name: q.qsize() for name, q in self._sinks.items()}}
@@ -233,6 +240,7 @@ class Pipeline:
         warn: WarnOnce,
         *,
         queue_warn_depth: int = 100,
+        deriver: CpsDeriver | None = None,
     ) -> None:
         names = [s.name for s in sinks]
         if len(set(names)) != len(names):
@@ -240,7 +248,7 @@ class Pipeline:
         self.ingest_q: queue.Queue = queue.Queue()
         sink_queues = {s.name: queue.Queue() for s in sinks}
         self.dispatcher = Dispatcher(
-            self.ingest_q, sink_queues, configured, warn, queue_warn_depth=queue_warn_depth
+            self.ingest_q, sink_queues, configured, warn, queue_warn_depth=queue_warn_depth, deriver=deriver
         )
         self.runners = [SinkRunner(s, sink_queues[s.name], warn) for s in sinks]
 

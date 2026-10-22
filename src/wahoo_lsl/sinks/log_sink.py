@@ -24,6 +24,7 @@ def sample_record(s: Sample) -> dict:
         "raw": s.raw_hex,
         "flags": s.flags,
         "fields": s.fields,
+        "derived": s.derived,
     }
     if s.parse_error is not None:
         record["parse_error"] = s.parse_error
