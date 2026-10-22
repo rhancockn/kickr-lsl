@@ -17,6 +17,16 @@ CPS_SERVICE_UUID = _uuid16(0x1818)
 CP_MEASUREMENT_UUID = _uuid16(0x2A63)
 CP_FEATURE_UUID = _uuid16(0x2A65)
 SENSOR_LOCATION_UUID = _uuid16(0x2A5D)
+DEVICE_INFORMATION_SERVICE_UUID = _uuid16(0x180A)
+# Device Information Service string characteristics, in display order.
+DEVICE_INFORMATION_FIELDS: dict[str, str] = {
+    _uuid16(0x2A29): "manufacturer",
+    _uuid16(0x2A24): "model_number",
+    _uuid16(0x2A25): "serial_number",
+    _uuid16(0x2A27): "hardware_revision",
+    _uuid16(0x2A26): "firmware_revision",
+    _uuid16(0x2A28): "software_revision",
+}
 
 
 class ParseError(ValueError):
@@ -52,6 +62,40 @@ MEASUREMENTS: dict[str, MeasurementSpec] = {
         MeasurementSpec("offset_compensation", ("offset_compensation",), (), 8),
     )
 }
+
+
+@dataclass(frozen=True)
+class FieldInfo:
+    unit: str
+    description: str
+    encoding: dict | None = None  # text/bool value -> numeric channel value
+
+
+# Units and meanings of every output key, plus derived metrics (shared by LSL channel metadata).
+FIELD_INFO: dict[str, FieldInfo] = {
+    "power_w": FieldInfo("W", "instantaneous power"),
+    "pedal_power_balance_pct": FieldInfo("%", "pedal power balance"),
+    "pedal_power_balance_ref": FieldInfo("", "pedal power balance reference", {"unknown": 0.0, "left": 1.0}),
+    "accumulated_torque_nm": FieldInfo("N.m", "cumulative torque, wraps at 2048 N.m"),
+    "torque_source": FieldInfo("", "accumulated torque source", {"wheel": 0.0, "crank": 1.0}),
+    "wheel_revs": FieldInfo("rev", "cumulative wheel revolutions (uint32)"),
+    "wheel_event_t": FieldInfo("1/2048 s", "last wheel event time, wraps at 65536"),
+    "crank_revs": FieldInfo("rev", "cumulative crank revolutions, wraps at 65536"),
+    "crank_event_t": FieldInfo("1/1024 s", "last crank event time, wraps at 65536"),
+    "max_force_n": FieldInfo("N", "maximum force magnitude"),
+    "min_force_n": FieldInfo("N", "minimum force magnitude"),
+    "max_torque_nm": FieldInfo("N.m", "maximum torque magnitude"),
+    "min_torque_nm": FieldInfo("N.m", "minimum torque magnitude"),
+    "max_angle_deg": FieldInfo("deg", "angle of maximum magnitude"),
+    "min_angle_deg": FieldInfo("deg", "angle of minimum magnitude"),
+    "top_dead_spot_deg": FieldInfo("deg", "top dead spot angle"),
+    "bottom_dead_spot_deg": FieldInfo("deg", "bottom dead spot angle"),
+    "accumulated_energy_kj": FieldInfo("kJ", "cumulative energy"),
+    "offset_compensation": FieldInfo("", "offset compensation indicator", {False: 0.0, True: 1.0}),
+    "speed_kmh": FieldInfo("km/h", "speed from wheel revolutions and wheel circumference"),
+    "cadence_rpm": FieldInfo("rpm", "cadence from crank revolutions"),
+}
+DERIVED_KEYS = ("speed_kmh", "cadence_rpm")
 
 
 @dataclass(frozen=True)

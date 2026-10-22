@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import sys
 import uuid as uuidlib
@@ -12,11 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from .cps import MEASUREMENTS
+from .derive import DEFAULT_CIRCUMFERENCE_M
 
 log = logging.getLogger(__name__)
 
 _MAC_RE = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
-_TOP_KEYS = {"device", "measurements", "log", "reconnect", "queue_warn_depth"}
+_TOP_KEYS = {"device", "measurements", "log", "reconnect", "queue_warn_depth", "lsl", "derive"}
 
 
 class ConfigError(ValueError):
@@ -45,12 +47,25 @@ class ReconnectConfig:
 
 
 @dataclass(frozen=True)
+class LslConfig:
+    enabled: bool = True
+    nominal_srate: float = 1.0  # 0 = irregular
+
+
+@dataclass(frozen=True)
+class DeriveConfig:
+    wheel_circumference_m: float = DEFAULT_CIRCUMFERENCE_M
+
+
+@dataclass(frozen=True)
 class Config:
     device: DeviceConfig
     measurements: tuple[str, ...] = ()
     log: LogConfig = field(default_factory=LogConfig)
     reconnect: ReconnectConfig = field(default_factory=ReconnectConfig)
     queue_warn_depth: int = 100
+    lsl: LslConfig = field(default_factory=LslConfig)
+    derive: DeriveConfig = field(default_factory=DeriveConfig)
 
 
 def load_config(path: str | Path, *, require_measurements: bool = True) -> Config:
@@ -79,6 +94,8 @@ def parse_config(obj: Any, *, require_measurements: bool = True) -> Config:
         log=_parse_log(section(obj, "log", {"path", "flush_every_n"})),
         reconnect=parse_reconnect(section(obj, "reconnect", {"enabled", "max_attempts", "backoff_s"})),
         queue_warn_depth=_int(obj.get("queue_warn_depth", 100), "queue_warn_depth", minimum=1),
+        lsl=_parse_lsl(section(obj, "lsl", {"enabled", "nominal_srate"})),
+        derive=_parse_derive(section(obj, "derive", {"wheel_circumference_m"})),
     )
 
 
@@ -180,6 +197,24 @@ def _parse_log(lg: dict) -> LogConfig:
     except (KeyError, IndexError, ValueError, AttributeError, TypeError) as e:
         raise ConfigError(f"log.path template is invalid ({e!r}); only {{start:<strftime>}} is supported") from None
     return LogConfig(path=path, flush_every_n=_int(lg.get("flush_every_n", 10), "log.flush_every_n", minimum=1))
+
+
+def _parse_lsl(d: dict) -> LslConfig:
+    enabled = d.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("lsl.enabled must be true or false")
+    srate = d.get("nominal_srate", 1.0)
+    if not _is_number(srate) or not math.isfinite(srate) or srate < 0:
+        raise ConfigError(f"lsl.nominal_srate must be a finite number >= 0 (0 = irregular), got {srate!r}")
+    return LslConfig(enabled=enabled, nominal_srate=float(srate))
+
+
+def _parse_derive(d: dict) -> DeriveConfig:
+    where = "derive.wheel_circumference_m"
+    circumference = pos_number(d.get("wheel_circumference_m", DEFAULT_CIRCUMFERENCE_M), where)
+    if not math.isfinite(circumference):
+        raise ConfigError(f"{where} must be a finite positive number, got {circumference!r}")
+    return DeriveConfig(wheel_circumference_m=circumference)
 
 
 def parse_reconnect(rc: dict) -> ReconnectConfig:

@@ -19,6 +19,7 @@ from wahoo_lsl.ble import (
     scan_cps,
 )
 from wahoo_lsl.config import parse_config
+from wahoo_lsl.cps import DEVICE_INFORMATION_FIELDS
 from wahoo_lsl.pipeline import Event, RawSample
 from wahoo_lsl.warn import WarnOnce
 
@@ -437,3 +438,57 @@ def test_find_device_by_mac_uses_address_lookup():
     found = asyncio.run(find_device(backend, DeviceConfig("KICKR", mac=KICKR.address), "linux", lambda r: False))
     assert found is KICKR
     assert backend.address_lookups == [KICKR.address]
+
+
+DIS_UUID = {key: uuid for uuid, key in DEVICE_INFORMATION_FIELDS.items()}
+DIS_VALUES = {DIS_UUID["manufacturer"]: b"Wahoo Fitness", DIS_UUID["model_number"]: b"KICKR V6\x00 "}
+
+
+def test_read_info_reads_device_information():
+    client, _ = make_client(FakeBackend(device_info=DIS_VALUES))
+    info = asyncio.run(client.read_info())
+    assert info.device_info == {"manufacturer": "Wahoo Fitness", "model_number": "KICKR V6"}
+
+
+def test_device_information_absent_is_empty():
+    client, _ = make_client(FakeBackend())
+    assert asyncio.run(client.read_info()).device_info == {}
+
+
+def test_device_information_empty_value_skipped():
+    client, _ = make_client(FakeBackend(device_info={DIS_UUID["serial_number"]: b"\x00"}))
+    assert asyncio.run(client.read_info()).device_info == {}
+
+
+def test_device_information_read_failure_skips_field():
+    backend = FakeBackend(device_info=DIS_VALUES, dis_fail={DIS_UUID["model_number"]})
+    client, _ = make_client(backend)
+    assert asyncio.run(client.read_info()).device_info == {"manufacturer": "Wahoo Fitness"}
+
+
+def test_device_information_read_timeout_skips_field(monkeypatch):
+    monkeypatch.setattr(ble_mod, "DIS_READ_TIMEOUT_S", 0.05)
+    backend = FakeBackend(device_info=DIS_VALUES, dis_hang={DIS_UUID["manufacturer"]})
+    client, _ = make_client(backend)
+    assert asyncio.run(client.read_info()).device_info == {"model_number": "KICKR V6"}
+
+
+def test_connected_event_carries_device_info():
+    backend = FakeBackend(sessions=[([POWER], False)], device_info=DIS_VALUES)
+    client, items = make_client(backend)
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(client.run(stop))
+        await until(lambda: len(raws(items)) == 1)
+        stop.set()
+        await task
+
+    asyncio.run(scenario())
+    connected = next(i for i in items if isinstance(i, Event) and i.kind == "connected")
+    assert connected.detail["device_info"] == {"manufacturer": "Wahoo Fitness", "model_number": "KICKR V6"}
+
+
+def test_device_information_service_lookup_error_is_empty():
+    client, _ = make_client(FakeBackend(device_info=DIS_VALUES, dis_service_error=True))
+    assert asyncio.run(client.read_info()).device_info == {}

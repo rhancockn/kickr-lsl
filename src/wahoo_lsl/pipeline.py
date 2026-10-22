@@ -1,6 +1,6 @@
 """Queues, dispatcher and sink runners (spec §7).
 
-BLE callback -> ingest_q -> Dispatcher (parse, warn, fan-out) -> one queue + thread per Sink.
+BLE callback -> ingest_q -> Dispatcher (parse, derive, warn, fan-out) -> one queue + thread per Sink.
 Queues are unbounded: nothing is ever dropped. Items are immutable and shared by all sinks.
 """
 from __future__ import annotations
@@ -9,11 +9,13 @@ import logging
 import queue
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
+from typing import Any
 
 from . import clock
 from .cps import ParseError, parse_measurement
+from .derive import CpsDeriver
 from .warn import WarnOnce
 
 log = logging.getLogger(__name__)
@@ -44,6 +46,7 @@ class Sample:
     flags: int | None  # None if the payload was too short to contain flags
     fields: dict  # ALL parsed output keys (no config filtering in MVP)
     parse_error: str | None = None
+    derived: dict = field(default_factory=dict)  # derive.CpsDeriver output; {} on parse errors
 
 
 class _Stop:
@@ -65,6 +68,7 @@ class Sink(ABC):
     """Consumer of Samples and Events. All methods are called on the sink's own thread."""
 
     name: str = "sink"
+    batched: bool = False  # True: the runner passes each drained queue batch to handle_batch()
 
     def start(self) -> None:
         """Open resources."""
@@ -73,12 +77,17 @@ class Sink(ABC):
     def handle(self, item: Sample | Event) -> None:
         """Process one item."""
 
+    def handle_batch(self, items: list[Sample | Event]) -> None:
+        """Process the items drained from the queue in one go (batched sinks only)."""
+        for item in items:
+            self.handle(item)
+
     def stop(self) -> None:
         """Flush and close resources."""
 
 
 class SinkRunner(threading.Thread):
-    """Feeds one sink from its queue until STOP. A failing sink never blocks the dispatcher."""
+    """Feeds one sink from its queue until STOP, in drained batches. A failing sink never blocks the dispatcher."""
 
     def __init__(self, sink: Sink, q: queue.Queue, warn: WarnOnce) -> None:
         super().__init__(name=f"sink-{sink.name}", daemon=True)
@@ -94,20 +103,11 @@ class SinkRunner(threading.Thread):
             log.exception("Sink %s failed to start; its data will be discarded", self.sink.name)
             started = False
         while True:
-            item = self.queue.get()
-            if item is STOP:
+            batch, stopping = self._next_batch()
+            if started and batch:
+                self._deliver(batch)
+            if stopping:
                 break
-            if not started:
-                continue
-            try:
-                self.sink.handle(item)
-            except Exception as e:
-                if self._warn.check(("sink_error", self.sink.name, type(e).__name__)):
-                    log.exception(
-                        "Sink %s failed handling an item; further %s errors suppressed",
-                        self.sink.name,
-                        type(e).__name__,
-                    )
         if started:
             try:
                 self.sink.stop()
@@ -115,8 +115,41 @@ class SinkRunner(threading.Thread):
                 log.exception("Sink %s failed to stop cleanly", self.sink.name)
 
 
+    def _next_batch(self) -> tuple[list, bool]:
+        """Block for one item, then take whatever else is already queued. True once STOP is seen."""
+        batch: list = []
+        item = self.queue.get()
+        while item is not STOP:
+            batch.append(item)
+            try:
+                item = self.queue.get_nowait()
+            except queue.Empty:
+                return batch, False
+        return batch, True
+
+    def _deliver(self, batch: list) -> None:
+        if self.sink.batched:
+            self._call(self.sink.handle_batch, batch)
+        else:
+            for item in batch:
+                self._call(self.sink.handle, item)
+
+    def _call(self, fn: Callable[[Any], None], arg: Any) -> None:
+        try:
+            fn(arg)
+        except Exception as e:
+            if self._warn.check(("sink_error", self.sink.name, type(e).__name__)):
+                log.exception(
+                    "Sink %s failed handling a batch; further %s errors suppressed"
+                    if self.sink.batched
+                    else "Sink %s failed handling an item; further %s errors suppressed",
+                    self.sink.name,
+                    type(e).__name__,
+                )
+
+
 class Dispatcher(threading.Thread):
-    """Parses RawSamples, applies warn-once availability checks, fans out to sink queues."""
+    """Parses RawSamples, derives speed/cadence, applies warn-once checks, fans out to sink queues."""
 
     def __init__(
         self,
@@ -127,6 +160,7 @@ class Dispatcher(threading.Thread):
         *,
         queue_warn_depth: int = 100,
         backlog_interval_s: float = 10.0,
+        deriver: CpsDeriver | None = None,
     ) -> None:
         super().__init__(name="dispatcher", daemon=True)
         self._ingest = ingest_q
@@ -137,6 +171,7 @@ class Dispatcher(threading.Thread):
         self._interval = backlog_interval_s
         self._unavailable: frozenset[str] = frozenset()
         self._last_backlog_warn: float | None = None
+        self._deriver = deriver if deriver is not None else CpsDeriver()
         self.parse_errors = 0
 
     def run(self) -> None:
@@ -180,6 +215,8 @@ class Dispatcher(threading.Thread):
             log.exception("Dispatcher failed processing an item; continuing")
 
     def _on_event(self, event: Event) -> Event:
+        if event.kind == "connected":
+            self._deriver.reset()  # precedes every connection's first sample; never derive across a link drop
         if event.kind == "features":
             self._unavailable = frozenset(event.detail.get("unavailable", ()))
         if event.kind == "stopped":
@@ -209,7 +246,8 @@ class Dispatcher(threading.Thread):
                 name,
                 m.flags,
             )
-        return Sample(raw.seq, raw.t_lsl, raw.t_wall_ns, raw_hex, m.flags, dict(m.values), None)
+        derived = self._deriver.update(raw.t_lsl, m.values)
+        return Sample(raw.seq, raw.t_lsl, raw.t_wall_ns, raw_hex, m.flags, dict(m.values), None, derived)
 
     def _check_backlog(self) -> None:
         depths = {"ingest": self._ingest.qsize(), **{name: q.qsize() for name, q in self._sinks.items()}}
@@ -233,6 +271,7 @@ class Pipeline:
         warn: WarnOnce,
         *,
         queue_warn_depth: int = 100,
+        deriver: CpsDeriver | None = None,
     ) -> None:
         names = [s.name for s in sinks]
         if len(set(names)) != len(names):
@@ -240,7 +279,7 @@ class Pipeline:
         self.ingest_q: queue.Queue = queue.Queue()
         sink_queues = {s.name: queue.Queue() for s in sinks}
         self.dispatcher = Dispatcher(
-            self.ingest_q, sink_queues, configured, warn, queue_warn_depth=queue_warn_depth
+            self.ingest_q, sink_queues, configured, warn, queue_warn_depth=queue_warn_depth, deriver=deriver
         )
         self.runners = [SinkRunner(s, sink_queues[s.name], warn) for s in sinks]
 

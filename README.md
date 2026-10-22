@@ -57,12 +57,55 @@ A `clock_sync` event at startup records `t_lsl` and `t_wall` read back-to-back.
 ## Log format
 
 ```json
-{"type":"sample","seq":42,"t_lsl":12345.678901,"t_wall":"2026-10-20T18:01:02.123456+00:00","raw":"1000a500...","flags":16,"fields":{"power_w":165,"wheel_revs":1203,"wheel_event_t":40321,"offset_compensation":false}}
+{"type":"sample","seq":42,"t_lsl":12345.678901,"t_wall":"2026-10-20T18:01:02.123456+00:00","raw":"1000a500...","flags":16,"fields":{"power_w":165,"wheel_revs":1203,"wheel_event_t":40321,"offset_compensation":false},"derived":{"speed_kmh":31.2,"cadence_rpm":88.0}}
 {"type":"event","kind":"disconnected","t_lsl":12350.1,"t_wall":"...","detail":{"name":"KICKR CORE","address":"..."}}
 ```
 
 Event kinds: `clock_sync`, `connected`, `features`, `disconnected`, `reconnect_attempt`, `reconnected`, `stopped`.
 Samples that fail to parse keep `raw` and add `parse_error`.
+`derived` holds speed and cadence computed once from successive wheel/crank counters (see LSL stream); it is `{}` on parse errors.
+
+## LSL stream
+
+`wahoo-lsl run` also publishes a Lab Streaming Layer stream (on by default; `"lsl": {"enabled": false}` turns it off).
+
+- **Name and `source_id`:** `<MODEL>-CPS-<id6>`, e.g. `KICKR-CPS-f24bfa`. `MODEL` is the Device Information model
+  number, or the advertised name without "Wahoo" and its hex suffix; `id6` is the last 6 hex digits of the MAC/UUID.
+  Resolve by `source_id` to reconnect reliably. On macOS the UUID is assigned per host by CoreBluetooth, so the
+  `source_id` is stable on one machine but differs between machines; on Windows/Linux the MAC makes it global.
+- **Type** `CPS`, format `double64`, nominal rate `lsl.nominal_srate` (default 1.0 Hz; 0 = irregular).
+- **Channels:** the numeric fields of each configured measurement the device supports, in config order, then
+  `speed_kmh` (if the device reports wheel revolutions) and `cadence_rpm` (if crank revolutions). Text/flag fields are
+  encoded (`torque_source` wheel=0/crank=1, `offset_compensation` false=0/true=1); absent values are NaN.
+  Units and types are in `desc/channels`.
+- **Metadata:** `desc/acquisition` (software, version, clock, timestamp meaning, nominal rate), `desc/device` (name, address, sensor location,
+  CP feature bits, Device Information fields), `desc/derivation` (`wheel_circumference_m` from
+  `derive.wheel_circumference_m`, default 2.105 m, and the derivation constants).
+- The stream appears once the device is connected and stays up across BLE reconnects to the same device.
+- liblsl prints its own INFO lines (e.g. `common.cpp ... INFO| git:...`) to stderr; they are harmless. On Windows the first run may show a firewall prompt for python.exe — allow it on private networks or LSL consumers on other machines cannot see the stream.
+
+**Timing.** Each sample's timestamp is its `t_lsl` (BLE notification arrival, same clock as the log). The KICKR
+notifies at ≈ 0.9998 Hz with ±0.1 s delivery jitter, and gaps (disconnects, parse errors) are not filled. Use the
+timestamps, not sample index ÷ rate (that drifts ≈ 0.7 s/h and misaligns after gaps). pyxdf's default
+`dejitter_timestamps=True` replaces timestamps of regular streams with a linear fit; pass `False` for raw arrival times.
+
+If the wheel or cranks stop for longer than the sensor's event-time wrap (32 s wheel, 64 s crank), the first revolution afterwards only re-primes the calculation, so speed/cadence resume one notification later.
+
+Quick check while `run` is going (save as `lsl_check.py`, run `python lsl_check.py KICKR-CPS-f24bfa`):
+
+```python
+import sys
+import pylsl
+source_id = sys.argv[1]  # from the "LSL outlet <source_id>: ..." log line, e.g. KICKR-CPS-f24bfa
+streams = pylsl.resolve_byprop("source_id", source_id, timeout=10)
+if not streams:
+    sys.exit(f"no LSL stream with source_id {source_id}")
+inlet = pylsl.StreamInlet(streams[0])
+print(inlet.info().as_xml())
+while True:
+    sample, ts = inlet.pull_sample()
+    print(f"{ts:.3f}", sample)
+```
 
 ## Exit codes
 
@@ -84,6 +127,7 @@ Run on each platform (macOS, Windows, Linux) with the same config, filling in on
 4. Power-cycle the KICKR mid-run: a "Connection ... lost" warning, `disconnected` → `reconnect_attempt` → `connected` → `reconnected` events in the log, `seq` continues.
 5. Ctrl-C (in an activated `wahoo` shell, not via `conda run`): clean exit (code 0, check with `echo $?`), last line of the log is a `stopped` event.
 6. `run --debug`: each sample printed to stdout.
+7. `list-features` prints the Device Information fields (model number etc.); `run` logs "LSL outlet KICKR…-CPS-…" and the resolver snippet under "LSL stream" shows live samples.
 
 ## FTMS power control (`wahoo-ftms`)
 

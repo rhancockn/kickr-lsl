@@ -34,7 +34,20 @@ def test_sample_record_shape():
         "raw": "0000a500",
         "flags": 0,
         "fields": {"power_w": 165, "wheel_revs": 1203},
+        "derived": {},
     }
+
+
+def test_sample_record_includes_derived():
+    s = Sample(0, 1.0, 1_700_000_000_123_456_789, "", 0, {}, None, {"speed_kmh": 30.5, "cadence_rpm": None})
+    assert sample_record(s)["derived"] == {"speed_kmh": 30.5, "cadence_rpm": None}
+
+
+def test_console_sink_prints_derived():
+    out = io.StringIO()
+    s = Sample(7, 1.0, 0, "", 0, {"power_w": 1}, None, {"speed_kmh": 30.54, "cadence_rpm": None})
+    ConsoleSink(out).handle(s)
+    assert out.getvalue().rstrip("\n").endswith("power_w=1 speed_kmh=30.5 cadence_rpm=None")
 
 
 def test_sample_record_includes_parse_error_only_when_set():

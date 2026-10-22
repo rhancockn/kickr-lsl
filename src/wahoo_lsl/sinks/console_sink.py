@@ -15,7 +15,9 @@ class ConsoleSink(Sink):
 
     def handle(self, item: Sample | Event) -> None:
         if isinstance(item, Sample):
-            fields = " ".join(f"{k}={v}" for k, v in item.fields.items())
+            values = [f"{k}={v}" for k, v in item.fields.items()]
+            values += [f"{k}={v:.1f}" if v is not None else f"{k}=None" for k, v in item.derived.items()]
+            fields = " ".join(values)
             line = f"[{item.seq:>5}] t_lsl={item.t_lsl:.6f}  {fields}"
             if item.parse_error:
                 line += f" PARSE_ERROR={item.parse_error} raw={item.raw_hex}"

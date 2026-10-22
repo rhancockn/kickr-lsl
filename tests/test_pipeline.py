@@ -1,10 +1,12 @@
 import logging
 import queue
 import struct
+import threading
 
 import pytest
 
 from wahoo_lsl import clock
+from wahoo_lsl.derive import CpsDeriver
 from wahoo_lsl.pipeline import (
     STOP,
     Dispatcher,
@@ -13,6 +15,7 @@ from wahoo_lsl.pipeline import (
     RawSample,
     Sample,
     Sink,
+    SinkRunner,
     make_event,
 )
 from wahoo_lsl.warn import WarnOnce
@@ -20,6 +23,7 @@ from wahoo_lsl.warn import WarnOnce
 POWER_ONLY = struct.pack("<Hh", 0, 200)
 WHEEL = struct.pack("<Hh", 1 << 4, 150) + struct.pack("<IH", 10, 2048)
 TRUNCATED_WHEEL = struct.pack("<Hh", 1 << 4, 5)
+WHEEL_NEXT = struct.pack("<Hh", 1 << 4, 150) + struct.pack("<IH", 11, 4096)  # +1 rev in 1 s
 
 
 class RecordingSink(Sink):
@@ -64,9 +68,9 @@ def features_event(unavailable=()) -> Event:
     return Event("features", 99.0, 1_700_000_000_000_000_000, {"unavailable": list(unavailable)})
 
 
-def run_pipeline(items, sinks, configured=("power",)):
+def run_pipeline(items, sinks, configured=("power",), deriver=None):
     warn = WarnOnce(logging.getLogger("wahoo_lsl.test"))
-    p = Pipeline(sinks, configured, warn)
+    p = Pipeline(sinks, configured, warn, deriver=deriver)
     p.start()
     for item in items:
         p.put(item)
@@ -222,3 +226,102 @@ def test_unexpected_dispatcher_error_does_not_lose_data(monkeypatch, caplog):
     assert s0.raw_hex == POWER_ONLY.hex()
     assert s1.fields["power_w"] == 200
     assert len([r for r in caplog.records if "Dispatcher failed" in r.getMessage()]) == 1
+
+
+def connected_event() -> Event:
+    return Event("connected", 99.5, 1_700_000_000_000_000_000, {"name": "KICKR", "address": "X"})
+
+
+def test_samples_carry_derived_metrics():
+    sink = RecordingSink()
+    run_pipeline([raw(0, WHEEL), raw(1, WHEEL_NEXT)], [sink], deriver=CpsDeriver(2.0))
+    s0, s1 = samples(sink)
+    assert s0.derived == {"speed_kmh": None, "cadence_rpm": None}
+    assert s1.derived["speed_kmh"] == pytest.approx(2.0 * 3.6)
+    assert s1.derived["cadence_rpm"] is None
+
+
+def test_connected_event_resets_derivation():
+    sink = RecordingSink()
+    run_pipeline([raw(0, WHEEL), connected_event(), raw(1, WHEEL_NEXT)], [sink])
+    assert samples(sink)[1].derived["speed_kmh"] is None  # re-primed, no delta across the reconnect
+
+
+def test_parse_error_sample_has_empty_derived():
+    sink = RecordingSink()
+    run_pipeline([raw(0, TRUNCATED_WHEEL)], [sink])
+    assert samples(sink)[0].derived == {}
+
+
+class BatchSink(Sink):
+    name = "batch"
+    batched = True
+
+    def __init__(self, fail: bool = False) -> None:
+        self.batches: list[list] = []
+        self.fail = fail
+        self.stopped = False
+
+    def handle(self, item) -> None:
+        raise AssertionError("batched sinks receive handle_batch")
+
+    def handle_batch(self, items) -> None:
+        self.batches.append(list(items))
+        if self.fail:
+            raise RuntimeError("batch boom")
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def run_runner(sink, items):
+    q: queue.Queue = queue.Queue()
+    for item in items:
+        q.put(item)
+    SinkRunner(sink, q, WarnOnce(logging.getLogger("wahoo_lsl.test"))).run()  # synchronous
+    return q
+
+
+def test_runner_delivers_queued_items_as_one_batch():
+    sink = BatchSink()
+    run_runner(sink, ["a", "b", "c", STOP])
+    assert sink.batches == [["a", "b", "c"]]
+    assert sink.stopped
+
+
+def test_runner_stop_mid_drain_processes_earlier_items_only():
+    sink = BatchSink()
+    q = run_runner(sink, ["a", STOP, "late"])
+    assert sink.batches == [["a"]]
+    assert sink.stopped
+    assert q.get_nowait() == "late"  # never consumed
+
+
+def test_failing_batch_is_warned_once_and_runner_continues(caplog):
+    sink = BatchSink(fail=True)
+    q: queue.Queue = queue.Queue()
+    runner = SinkRunner(sink, q, WarnOnce(logging.getLogger("wahoo_lsl.test")))
+    with caplog.at_level(logging.ERROR):
+        runner.start()
+        q.put("a")
+        for _ in range(200):  # wait until the first batch is consumed
+            if sink.batches:
+                break
+            threading.Event().wait(0.01)
+        q.put("b")
+        q.put(STOP)
+        runner.join(5)
+    assert [x for batch in sink.batches for x in batch] == ["a", "b"]
+    assert len([r for r in caplog.records if "batch" in r.getMessage()]) == 1
+
+
+def test_unbatched_sink_errors_stay_per_item():
+    class FailSecond(RecordingSink):
+        def handle(self, item) -> None:
+            if item == "b":
+                raise RuntimeError("only b")
+            super().handle(item)
+
+    sink = FailSecond()
+    run_runner(sink, ["a", "b", "c", STOP])
+    assert sink.items == ["a", "c"]

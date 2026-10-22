@@ -287,3 +287,13 @@ def test_sensor_location_names():
     assert sensor_location_name(13) == "Rear hub"
     assert sensor_location_name(16) == "Chain ring"
     assert sensor_location_name(17) == "Unknown(17)"
+
+
+def test_field_info_covers_every_measurement_key():
+    from wahoo_lsl.cps import DERIVED_KEYS, FIELD_INFO, MEASUREMENTS
+
+    keys = {k for spec in MEASUREMENTS.values() for k in spec.keys}
+    assert keys | set(DERIVED_KEYS) == set(FIELD_INFO)
+    assert FIELD_INFO["torque_source"].encoding == {"wheel": 0.0, "crank": 1.0}
+    assert FIELD_INFO["offset_compensation"].encoding == {False: 0.0, True: 1.0}
+    assert FIELD_INFO["speed_kmh"].unit == "km/h"

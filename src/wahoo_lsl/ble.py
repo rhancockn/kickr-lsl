@@ -17,6 +17,8 @@ from .cps import (
     CP_FEATURE_UUID,
     CP_MEASUREMENT_UUID,
     CPS_SERVICE_UUID,
+    DEVICE_INFORMATION_FIELDS,
+    DEVICE_INFORMATION_SERVICE_UUID,
     SENSOR_LOCATION_UUID,
     Features,
     ParseError,
@@ -33,6 +35,8 @@ COMMS_ERRORS = (BleakError, asyncio.TimeoutError, OSError)
 
 # Upper bound for each of stop_notify / disconnect at shutdown (CoreBluetooth disconnect has no timeout).
 SHUTDOWN_TIMEOUT_S = 5.0
+# Upper bound for each optional Device Information read, so a slow device never stalls connecting.
+DIS_READ_TIMEOUT_S = 2.0
 
 
 class BleSetupError(Exception):
@@ -72,6 +76,7 @@ class DeviceInfo:
     address_kind: str  # "mac" or "uuid"
     features: Features
     sensor_location: str | None
+    device_info: dict[str, str] = field(default_factory=dict)  # Device Information Service strings
 
 
 class ReconnectPolicy:
@@ -215,6 +220,7 @@ class CpsClient:
             if location_char is not None:
                 loc_raw = await client.read_gatt_char(location_char)
                 location = sensor_location_name(loc_raw[0]) if loc_raw else None
+            device_info = await _read_device_information(client)
         except BaseException:
             await self._safe_disconnect()
             raise
@@ -224,6 +230,7 @@ class CpsClient:
             address_kind=address_kind(self._platform),
             features=features,
             sensor_location=location,
+            device_info=device_info,
         )
         self._info = info
         return info
@@ -241,7 +248,15 @@ class CpsClient:
         """Connect, report features, subscribe. Any failure -> BleSetupError, nothing left connected."""
         try:
             info = await self.connect_and_read()
-            self._emit(make_event("connected", name=info.name, address=info.address, address_kind=info.address_kind))
+            self._emit(
+                make_event(
+                    "connected",
+                    name=info.name,
+                    address=info.address,
+                    address_kind=info.address_kind,
+                    device_info=info.device_info,
+                )
+            )
             self._report_features(info)  # before subscribing, so it precedes all samples
             await self._client.start_notify(self._measurement_char, self._on_notify)
         except BleSetupError:
@@ -360,6 +375,31 @@ class CpsClient:
         if client is None:
             return
         await _bounded(client.disconnect(), "disconnect")
+
+
+async def _read_device_information(client: Any) -> dict[str, str]:
+    """Best-effort Device Information Service read; anything absent, empty or failing is skipped."""
+    try:
+        service = client.services.get_service(DEVICE_INFORMATION_SERVICE_UUID)
+    except COMMS_ERRORS as e:
+        log.debug("Device Information service not available: %r", e)
+        return {}
+    if service is None:
+        return {}
+    out: dict[str, str] = {}
+    for uuid, key in DEVICE_INFORMATION_FIELDS.items():
+        char = service.get_characteristic(uuid)
+        if char is None:
+            continue
+        try:
+            raw = await asyncio.wait_for(client.read_gatt_char(char), DIS_READ_TIMEOUT_S)
+        except COMMS_ERRORS as e:
+            log.debug("Device Information %s not read: %r", key, e)
+            continue
+        text = bytes(raw).decode("utf-8", errors="replace").strip("\x00 \t\r\n")
+        if text:
+            out[key] = text
+    return out
 
 
 async def _wait_first(*events: asyncio.Event) -> None:
