@@ -154,7 +154,7 @@ when terminated.)
 
 Start-up order:
 
-1. Start FTMS; wait up to **15 s** for its TCP port to accept connections
+1. Start FTMS; wait up to **the FTMS config's `device.scan_timeout_s` + 20 s** for its TCP port to accept connections
    (the probe is a brief client connection the service logs and ignores).
    If it exits first, stop and exit with its code; on timeout stop it, exit 2.
 2. Start CPS logger. If it exits within **2 s**, stop FTMS and exit with its code.
@@ -168,10 +168,13 @@ or any child exiting. Order: **dashboard → FTMS → CPS**. Each child gets an
 interrupt (POSIX: SIGINT, children started in their own session so a
 terminal Ctrl-C reaches only the wrapper; Windows: `CTRL_BREAK_EVENT`, children started with
 `CREATE_NEW_PROCESS_GROUP`) and **20 s** to exit, then `terminate()`, then
-`kill()` after 5 s more. Because the dashboard closes first, its client
-disconnect makes the server spin down to 0 W before the server is signalled
-(this is the safety path on Windows, where the existing CLI installs no
-signal handlers). Exit code: the first non-zero child exit code observed,
+`kill()` after 5 s more. After the dashboard exits, the launcher itself
+connects as a client, sets 0 W and waits up to **3 s** for the service to
+confirm it before signalling the FTMS service (all platforms; skipped when
+hurrying or if the FTMS port never opened). SIGHUP is handled like SIGTERM on
+POSIX, and a failing output stream never stops the relay from draining the
+children's pipes. A child that exits with Windows' `STATUS_CONTROL_C_EXIT`
+after our interrupt counts as a clean exit. Exit code: the first non-zero child exit code observed,
 else 0; a second Ctrl-C skips the grace periods.
 
 ## Error handling summary

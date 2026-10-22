@@ -153,13 +153,16 @@ wahoo-dashboard --ftms-config my-ftms.json --cps-config my-cps.json --log-dir lo
 then opens the dashboard. Output from all three is shown with `[ftms]`, `[cps]` and
 `[dash]` prefixes. Closing the window, pressing Ctrl-C, or any of the three exiting stops
 the rest in the order dashboard → FTMS service → CPS logger (press Ctrl-C again to skip
-the waits). The exit code is the first non-zero exit among the three, or 2 for a
-config or start-up problem.
+the waits). Before the FTMS service is signalled, the launcher connects, sets 0 W and
+waits up to 3 s for confirmation. The port wait is the FTMS config's scan timeout + 20 s.
+The exit code is the first non-zero exit among the three (a child that fails during
+start-up returns its own code), or 2 for a config problem, a missing script or the FTMS
+port not opening.
 
 To open only the window against a service and logger that are already running:
 
 ```bash
-python -m wahoo_lsl.dashboard.app --log-dir logs [--port 47610] [--max-watts 1000] [--circumference-m 2.105]
+python -m wahoo_lsl.dashboard.app --log-dir logs [--host 127.0.0.1] [--port 47610] [--max-watts 1000] [--circumference-m 2.105]
 ```
 
 - **Slider:** sends the target as you drag (the service applies at most 2 changes per
@@ -170,6 +173,7 @@ python -m wahoo_lsl.dashboard.app --log-dir logs [--port 47610] [--max-watts 100
 - **CPS panels:** power, speed and cadence with graphs. Speed and cadence are calculated
   from the wheel and crank revolution counters; speed assumes a 2.105 m wheel unless you
   pass `--circumference-m`.
+  The CPS values show "—" after 15 s without samples.
 - **Graphs:** fill left to right over 5 minutes, then all clear and start again.
 - **Lag:** the logger writes to disk every `log.flush_every_n` samples, so CPS values can
   arrive several seconds late (points still land at the time they were measured). Set

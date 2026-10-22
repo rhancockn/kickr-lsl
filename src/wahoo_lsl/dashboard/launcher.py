@@ -16,15 +16,17 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Sequence
+from typing import IO, Callable, Sequence
 
 from wahoo_lsl.config import ConfigError
-from wahoo_lsl.ftms.config import load_ftms_config
+from wahoo_lsl.ftms.client import KickrClient, KickrError
+from wahoo_lsl.ftms.config import FtmsConfig, load_ftms_config
 
 from .metrics import DEFAULT_CIRCUMFERENCE_M
 
 WIN = sys.platform == "win32"
 SHUTDOWN_ORDER = ("dash", "ftms", "cps")
+STATUS_CONTROL_C_EXIT = 0xC000013A  # Windows exit code of a process ended by CTRL_C/CTRL_BREAK
 
 
 class LauncherError(Exception):
@@ -38,6 +40,64 @@ class Timings:
     grace_s: float = 20.0
     kill_after_s: float = 5.0
     poll_s: float = 0.2
+
+
+def timings_for(ftms_cfg: FtmsConfig) -> Timings:
+    """The FTMS port opens only after scan (up to scan_timeout_s) + connect + handshake."""
+    return Timings(port_wait_s=ftms_cfg.device.scan_timeout_s + 20.0)
+
+
+def _clean_code(returncode: int | None, signalled: bool) -> int | None:
+    """A child we interrupted with CTRL_BREAK on Windows exits 0xC000013A; that is a clean stop."""
+    if signalled and returncode == STATUS_CONTROL_C_EXIT:
+        return 0
+    return returncode
+
+
+def confirm_zero(host: str, port: int, timeout_s: float = 3.0, poll_s: float = 0.1,
+                 say: Callable[[str], None] = lambda msg: None) -> bool:
+    """Connect as a client, request 0 W and wait for the service to confirm it. Never raises."""
+    deadline = time.monotonic() + timeout_s
+    client = None
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                say("timed out waiting for 0 W confirmation")
+                return False
+            try:
+                client = KickrClient(host, port, min(1.0, remaining))
+            except OSError as e:
+                say(f"service unreachable ({e}); cannot confirm 0 W")
+                return False
+            try:
+                client.set_target_power(0)
+                break
+            except (KickrError, OSError) as e:  # busy (dashboard still releasing) or closed: retry
+                client.close()
+                client = None
+                time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+        while True:
+            status = client.read()
+            if status.link != "ready":
+                say(f"link is {status.link}, not ready; the service will spin down on disconnect")
+                return False
+            if status.target.confirmed_w == 0:
+                say("0 W confirmed")
+                return True
+            if time.monotonic() >= deadline:
+                say("timed out waiting for 0 W confirmation")
+                return False
+            time.sleep(poll_s)
+    except Exception as e:
+        say(f"could not confirm 0 W ({e})")
+        return False
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def find_script(name: str, scripts_dir: str | Path | None = None) -> Path | None:
@@ -72,6 +132,7 @@ class Child:
 
     def __init__(self, label: str, argv: Sequence[str], out: IO[str], out_lock: threading.Lock) -> None:
         self.label = label
+        self._signalled = False
         # POSIX: own session, so a terminal Ctrl-C reaches only the wrapper (ordered shutdown).
         # Windows: own process group, so CTRL_BREAK_EVENT can target it.
         group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WIN else {"start_new_session": True}
@@ -84,10 +145,16 @@ class Child:
 
     def _pump(self, out: IO[str], lock: threading.Lock) -> None:
         assert self.proc.stdout is not None
-        for line in self.proc.stdout:
+        broken = False
+        for line in self.proc.stdout:  # always keep draining so the child never blocks on a full pipe
+            if broken:
+                continue
             with lock:
-                out.write(f"[{self.label}] {line.rstrip(chr(13) + chr(10))}\n")
-                out.flush()
+                try:
+                    out.write(f"[{self.label}] {line.rstrip(chr(13) + chr(10))}\n")
+                    out.flush()
+                except (OSError, ValueError):
+                    broken = True
 
     def poll(self) -> int | None:
         return self.proc.poll()
@@ -95,6 +162,7 @@ class Child:
     def stop(self, grace_s: float, kill_after_s: float, hurry: threading.Event) -> int:
         if self.proc.poll() is None:
             try:
+                self._signalled = True
                 self.proc.send_signal(signal.CTRL_BREAK_EVENT if WIN else signal.SIGINT)
             except OSError:
                 pass  # already gone
@@ -111,15 +179,18 @@ class Child:
         self._relay.join(2.0)
         if self.proc.stdout is not None:
             self.proc.stdout.close()
-        return self.proc.returncode
+        return _clean_code(self.proc.returncode, self._signalled and WIN)
 
 
 class Supervisor:
     def __init__(self, commands: dict[str, list[str]], host: str, port: int, out: IO[str],
-                 stop: threading.Event, hurry: threading.Event, timings: Timings = Timings()) -> None:
+                 stop: threading.Event, hurry: threading.Event, timings: Timings = Timings(),
+                 confirm: Callable[[str, int], object] | None = None) -> None:
         self.commands, self.host, self.port, self.out = commands, host, port, out
         self.stop_event, self.hurry, self.t = stop, hurry, timings
         self._lock = threading.Lock()
+        self._confirm = confirm
+        self._port_ready = False
         self.children: dict[str, Child] = {}
         self.code = 0
 
@@ -129,15 +200,31 @@ class Supervisor:
         finally:
             for label in SHUTDOWN_ORDER:
                 child = self.children.get(label)
+                if label == "ftms":
+                    self._confirm_zero_before_ftms(child)
                 if child is not None:
                     grace = 0.0 if self.hurry.is_set() else self.t.grace_s
                     self._note(child.stop(grace, self.t.kill_after_s, self.hurry))
         return self.code
 
+    def _confirm_zero_before_ftms(self, ftms: Child | None) -> None:
+        if ftms is None or not self._port_ready or self.hurry.is_set() or ftms.poll() is not None:
+            return
+        try:
+            if self._confirm is not None:
+                self._confirm(self.host, self.port)
+            else:
+                confirm_zero(self.host, self.port, say=lambda m: self._say(f"0 W check: {m}"))
+        except Exception as e:  # never let the safety check block the shutdown
+            self._say(f"0 W check failed: {e}")
+
     def _say(self, msg: str) -> None:
         with self._lock:
-            self.out.write(f"[wrapper] {msg}\n")
-            self.out.flush()
+            try:
+                self.out.write(f"[wrapper] {msg}\n")
+                self.out.flush()
+            except (OSError, ValueError):
+                pass
 
     def _note(self, returncode: int | None) -> None:
         if self.code == 0 and returncode:
@@ -160,6 +247,7 @@ class Supervisor:
             return
         if ready == "stopped":
             return
+        self._port_ready = True
         cps = self._start("cps")
         deadline = time.monotonic() + self.t.cps_early_exit_s
         while time.monotonic() < deadline and not self.stop_event.is_set():
@@ -214,7 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        settings = load_ftms_config(args.ftms_config).ftms
+        ftms_cfg = load_ftms_config(args.ftms_config)
+        settings = ftms_cfg.ftms
         commands = build_commands(args, settings.host, settings.port)
     except (ConfigError, LauncherError) as e:
         print(f"wahoo-dashboard: {e}", file=sys.stderr)
@@ -222,13 +311,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     stop, hurry = threading.Event(), threading.Event()
 
     def on_signal(signum: int, frame: object) -> None:
-        (hurry if stop.is_set() else stop).set()  # a second interrupt skips the grace periods
+        # A second interrupt skips the grace periods. Set the event from a thread: Event.set()
+        # takes a lock the interrupted main thread may already hold.
+        threading.Thread(target=(hurry if stop.is_set() else stop).set, daemon=True).start()
 
-    for name in ("SIGINT", "SIGTERM", "SIGBREAK"):
+    for name in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
         sig = getattr(signal, name, None)
         if sig is not None:
             signal.signal(sig, on_signal)
-    return Supervisor(commands, settings.host, settings.port, sys.stdout, stop, hurry).run()
+    return Supervisor(commands, settings.host, settings.port, sys.stdout, stop, hurry, timings_for(ftms_cfg)).run()
 
 
 if __name__ == "__main__":

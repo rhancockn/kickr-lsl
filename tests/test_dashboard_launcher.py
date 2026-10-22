@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import socket
 import sys
@@ -7,9 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from ftms_stub import StubService, snapshot
 
 from wahoo_lsl.dashboard import launcher
-from wahoo_lsl.dashboard.launcher import LauncherError, Supervisor, Timings, build_commands, find_script
+from wahoo_lsl.dashboard.launcher import (LauncherError, Supervisor, Timings, build_commands, confirm_zero,
+                                          find_script, timings_for)
+from wahoo_lsl.ftms.config import parse_ftms_config
 
 FAKE = str(Path(__file__).with_name("dashboard_fake_child.py"))
 FAST = Timings(port_wait_s=5.0, cps_early_exit_s=0.3, grace_s=5.0, kill_after_s=2.0, poll_s=0.05)
@@ -25,9 +29,9 @@ def fake(label, order, *mode):
     return [sys.executable, FAKE, label, str(order), *map(str, mode)]
 
 
-def start(commands, port, timings=FAST):
-    ns = SimpleNamespace(out=io.StringIO(), stop=threading.Event(), hurry=threading.Event(), code=None)
-    sup = Supervisor(commands, "127.0.0.1", port, ns.out, ns.stop, ns.hurry, timings)
+def start(commands, port, timings=FAST, out=None, confirm=lambda host, port: True):
+    ns = SimpleNamespace(out=out or io.StringIO(), stop=threading.Event(), hurry=threading.Event(), code=None)
+    sup = Supervisor(commands, "127.0.0.1", port, ns.out, ns.stop, ns.hurry, timings, confirm=confirm)
 
     def run():
         ns.code = sup.run()
@@ -108,7 +112,7 @@ def test_cps_early_exit_returns_its_code(tmp_path):
     port = free_port()
     o = tmp_path / "order"
     cmds = {"ftms": fake("ftms", o, "listen", port), "cps": fake("cps", o, "exit", 5, 0), "dash": fake("dash", o)}
-    ns = start(cmds, port)
+    ns = start(cmds, port, dataclasses.replace(FAST, cps_early_exit_s=3.0))
     assert finish(ns) == 5
     assert order(o) == ["ftms"]
     assert "[dash]" not in ns.out.getvalue()
@@ -202,3 +206,151 @@ def test_main_missing_scripts_exits_2(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(launcher.sysconfig, "get_path", lambda name: str(empty))
     assert launcher.main(["--ftms-config", str(cfg)]) == 2
     assert "pip install -e ." in capsys.readouterr().err
+
+
+# --- confirm_zero ----------------------------------------------------------
+
+
+def test_confirm_zero_true_when_target_confirmed():
+    with StubService(lambda r: {"ok": True, "target_w": 0, "clamped": False} if r["cmd"] == "set"
+                     else snapshot(requested=0, confirmed=0)) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=2.0, poll_s=0.02) is True
+        assert {"cmd": "set", "watts": 0} in svc.requests
+
+
+def test_confirm_zero_false_after_timeout_when_not_confirmed():
+    with StubService(lambda r: {"ok": True, "target_w": 0, "clamped": False} if r["cmd"] == "set"
+                     else snapshot(requested=0, confirmed=120)) as svc:
+        started = time.monotonic()
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=0.3, poll_s=0.02) is False
+        assert 0.25 <= time.monotonic() - started < 2.0
+
+
+def test_confirm_zero_false_when_link_not_ready():
+    with StubService(lambda r: {"ok": True, "target_w": 0, "clamped": False} if r["cmd"] == "set"
+                     else snapshot(requested=0, confirmed=120, link="lost")) as svc:
+        started = time.monotonic()
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=2.0, poll_s=0.02) is False
+        assert time.monotonic() - started < 1.0
+
+
+def test_confirm_zero_unreachable_is_false_and_quick():
+    started = time.monotonic()
+    assert confirm_zero("127.0.0.1", free_port(), timeout_s=3.0, poll_s=0.02) is False
+    assert time.monotonic() - started < 1.5
+
+
+def test_confirm_zero_retries_while_busy():
+    state = {"n": 0}
+
+    def reply(r):
+        if r["cmd"] == "set":
+            state["n"] += 1
+            if state["n"] < 3:
+                return {"ok": False, "error": "busy", "detail": "another client is connected"}
+            return {"ok": True, "target_w": 0, "clamped": False}
+        return snapshot(requested=0, confirmed=0)
+
+    with StubService(reply) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=3.0, poll_s=0.02) is True
+
+
+def test_confirm_zero_false_if_service_closes_connection():
+    with StubService(lambda r: None) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=0.3, poll_s=0.02) is False
+
+
+def test_supervisor_confirms_zero_after_dash_before_ftms_signalled(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    calls = []
+
+    def confirm(host, p):
+        calls.append((host, p, order(o)))
+        return True
+
+    ns = start(cmds, port, confirm=confirm)
+    wait_for(lambda: "[dash] dash started" in ns.out.getvalue())
+    ns.stop.set()
+    assert finish(ns) == 0
+    assert calls == [("127.0.0.1", port, ["dash"])]  # dash already stopped, ftms not yet
+    assert order(o) == ["dash", "ftms", "cps"]
+
+
+def test_supervisor_does_not_confirm_when_port_never_opened(tmp_path):
+    port = free_port()
+    o = tmp_path / "order"
+    cmds = {"ftms": fake("ftms", o), "cps": fake("cps", o), "dash": fake("dash", o)}
+    calls = []
+    ns = start(cmds, port, Timings(port_wait_s=0.5, cps_early_exit_s=0.3, grace_s=5.0, kill_after_s=2.0, poll_s=0.05),
+               confirm=lambda h, p: calls.append(1))
+    assert finish(ns) == 2
+    assert calls == []
+
+
+def test_supervisor_does_not_confirm_when_hurrying(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    calls = []
+    ns = start(cmds, port, confirm=lambda h, p: calls.append(1))
+    wait_for(lambda: "[dash] dash started" in ns.out.getvalue())
+    ns.hurry.set()
+    ns.stop.set()
+    finish(ns)
+    assert calls == []
+
+
+def test_supervisor_survives_a_confirm_that_raises(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+
+    def boom(h, p):
+        raise RuntimeError("boom")
+
+    ns = start(cmds, port, confirm=boom)
+    wait_for(lambda: "[dash] dash started" in ns.out.getvalue())
+    ns.stop.set()
+    assert finish(ns) == 0
+    assert order(o) == ["dash", "ftms", "cps"]
+
+
+# --- output failures --------------------------------------------------------
+
+
+class BrokenOut:
+    def __init__(self):
+        self.attempts = 0
+
+    def write(self, text):
+        self.attempts += 1
+        raise OSError("broken pipe")
+
+    def flush(self):
+        raise OSError("broken pipe")
+
+
+def test_broken_output_does_not_stop_shutdown(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    out = BrokenOut()
+    ns = start(cmds, port, out=out)
+    wait_for(lambda: out.attempts >= 3)  # all three children printed their first line
+    ns.stop.set()
+    assert finish(ns) == 0
+    assert order(o) == ["dash", "ftms", "cps"]
+
+
+# --- small pure helpers -----------------------------------------------------
+
+
+def test_timings_for_scales_port_wait_with_scan_timeout():
+    cfg = parse_ftms_config({"device": {"name": "KICKR", "scan_timeout_s": 25}})
+    assert timings_for(cfg).port_wait_s == 45.0
+    assert timings_for(parse_ftms_config({"device": {"name": "KICKR"}})).port_wait_s == 30.0
+
+
+def test_clean_code_maps_windows_ctrl_break_exit_to_zero():
+    assert launcher._clean_code(0xC000013A, True) == 0
+    assert launcher._clean_code(0xC000013A, False) == 0xC000013A
+    assert launcher._clean_code(3, True) == 3
+    assert launcher._clean_code(0, True) == 0
