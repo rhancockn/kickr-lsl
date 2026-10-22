@@ -15,6 +15,8 @@
     "port": 47610,
     "max_rate_hz": 2,
     "ack_timeout_s": 1.0,
-    "max_watts": null
+    "max_watts": null,
+    "slew_w_per_s": 10,
+    "slew_update_interval_s": 10
   }
 }
