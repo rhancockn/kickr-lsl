@@ -20,6 +20,8 @@ class StubController:
     def __init__(self) -> None:
         self.requests: list[int] = []
         self.spin_downs: list[str] = []
+        self.slews: list[float] = []
+        self.calls: list[str] = []
         self.link_down = False
 
     def request_target(self, watts: int):
@@ -32,7 +34,15 @@ class StubController:
     def snapshot(self):
         return SNAPSHOT
 
+    def set_slew_rate(self, w_per_s):
+        self.slews.append(w_per_s)
+        return float(w_per_s)
+
+    def reset_slew(self) -> None:
+        self.calls.append("reset_slew")
+
     async def spin_down(self, reason: str) -> bool:
+        self.calls.append("spin_down")
         self.spin_downs.append(reason)
         return True
 
@@ -267,3 +277,78 @@ def test_disconnect_spin_down_starts_before_wait_closed(monkeypatch):
 
     run(scenario)
     assert ctl.requests == [100, 150]
+
+
+def test_slew_command_round_trip():
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert await ask(reader, writer, {"cmd": "slew", "w_per_s": 20}) == {"ok": True, "slew_w_per_s": 20.0}
+        assert await ask(reader, writer, {"cmd": "slew", "w_per_s": 2.5}) == {"ok": True, "slew_w_per_s": 2.5}
+        writer.close()
+        await server.close()
+
+    run(scenario)
+    assert ctl.slews == [20, 2.5]
+
+
+@pytest.mark.parametrize("value", [-1, 1001, True, "10", None, [1]])
+def test_slew_command_rejects_bad_values(value):
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = await ask(reader, writer, {"cmd": "slew", "w_per_s": value})
+        assert reply["ok"] is False and reply["error"] == "invalid_slew"
+        assert (await ask(reader, writer, {"cmd": "read"}))["ok"] is True  # connection still usable
+        writer.close()
+        await server.close()
+
+    run(scenario)
+    assert ctl.slews == []
+
+
+def test_slew_command_rejects_non_finite():
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = await ask(reader, writer, b'{"cmd": "slew", "w_per_s": NaN}')
+        assert reply["error"] == "invalid_slew"
+        writer.close()
+        await server.close()
+
+    run(scenario)
+
+
+def test_disconnect_resets_slew_before_spin_down():
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        await ask(reader, writer, {"cmd": "slew", "w_per_s": 20})
+        writer.close()
+        await until(lambda: ctl.spin_downs)
+        await server.close()
+
+    run(scenario)
+    assert ctl.calls == ["reset_slew", "spin_down"]
+
+
+def test_unknown_command_lists_slew():
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = await ask(reader, writer, {"cmd": "nope"})
+        assert "'slew'" in reply["detail"]
+        writer.close()
+        await server.close()
+
+    run(scenario)
