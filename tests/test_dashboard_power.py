@@ -246,3 +246,21 @@ def test_stop_while_unreachable_is_prompt():
     w.stop()
     assert time.monotonic() - started < 2.0
     assert not w._thread.is_alive()
+
+
+def test_busy_service_is_retried_at_the_retry_rate_even_if_ui_requests_on_connect():
+    connects = []
+
+    def post(item):
+        if item[0] == "service_connected":
+            connects.append(time.monotonic())
+            w.request(0)  # what the UI does on every service_connected
+
+    with StubService(lambda r: {"ok": False, "error": "busy", "detail": "another client is connected"}) as svc:
+        w = PowerWorker(post, port=svc.port, poll_s=0.02, retry_s=0.5)
+        w.start()
+        try:
+            time.sleep(1.6)
+        finally:
+            w.stop()
+    assert 2 <= len(connects) <= 5, len(connects)

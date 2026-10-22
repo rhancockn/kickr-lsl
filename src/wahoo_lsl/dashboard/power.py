@@ -61,11 +61,14 @@ class PowerWorker:
         try:
             while not self._stop.is_set():
                 if self._client is None and not self._connect():
-                    self._sleep(self._retry_s)
+                    self._stop.wait(self._retry_s)  # not _wake: requests must not shorten the retry
                     continue
                 self._send_pending()
                 if self._client is not None:
                     self._read()
+                if self._client is None:  # dropped (e.g. busy): retry at the retry rate
+                    self._stop.wait(self._retry_s)
+                    continue
                 self._sleep(self._poll_s)
         finally:
             self._shutdown()
