@@ -139,7 +139,9 @@ def test_serve_setup_failure(tmp_path):
 
 def test_end_to_end_set_read_disconnect_shutdown():
     port = free_port()
-    cfg = parse_ftms_config({"device": {"name": "KICKR"}, "reconnect": {"backoff_s": [0.01]}, "ftms": {"port": port}})
+    cfg = parse_ftms_config(
+        {"device": {"name": "KICKR"}, "reconnect": {"backoff_s": [0.01]}, "ftms": {"port": port, "slew_w_per_s": 0}}
+    )
     backend = FakeFtmsBackend()
 
     async def until(cond, timeout=3.0):
