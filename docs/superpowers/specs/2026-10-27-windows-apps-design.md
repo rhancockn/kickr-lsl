@@ -116,7 +116,9 @@ background thread:
   3. stop `cps`.
   Grace periods come from `Timings`. A second close request skips the grace periods
   (hurry), as in the launcher.
-- **Restart:** stop, then start, with the same commands. Configs are re-read by the children.
+- **Restart** is done by the window: it stops the supervisor, waits until it is no longer
+  running, re-reads `ftms.json` (host/port may have changed) and starts a new supervisor.
+  One supervisor runs one session.
 - `out` is a line sink: a small writer object that puts each relayed line on the window's
   queue and appends it to `<data_dir>/logs/server_<YYYYmmdd_HHMMSS>.log`.
 
@@ -152,7 +154,9 @@ test instead of silently breaking the window.
 ### Window (`server_app.py`)
 
 - **Rows:** Trainer control (FTMS), Trainer data (CPS) + LSL stream name, FTMS client, and
-  Power (live W from `LslFollower`; `—` when stale for more than 15 s).
+  Power (live W from an `LslFollower` bound to this server's own stream: it is created with
+  the `source_id` from the `LSL outlet` line, so another CPS stream on the network is never shown;
+  `—` when stale for more than 15 s).
 - **Log pane:** a scrolling, read-only view of the relayed lines, capped at the last 2000.
 - **Buttons:**
   - **Open logs folder** (`os.startfile` on Windows; `open` / `xdg-open` elsewhere);
@@ -202,7 +206,7 @@ background thread with the same `start()` / `stop()` / `post` events as `LogFoll
 ### App (`dashboard_app.py`)
 
 - `LslDashboard(Dashboard)` retitles the CPS frame to "CPS (LSL)" and the status bar to
-  `service: … · stream: <name> · bad lines: …`. It overrides `_refresh_status` and
+  `service: … · stream: <name>` (no bad-line count; LSL has no bad lines). It overrides `_refresh_status` and
   relabels the frame after `_build`.
 - `main(argv)`:
   - **Defaults** from `<data_dir>/ftms.json`: `host`, `port`, `slew_w_per_s`. A missing or
@@ -252,7 +256,8 @@ Requires Windows, Python 3.12 and Inno Setup 6 (`iscc` on PATH, or the default i
 3. `pyinstaller packaging\windows\wahoo.spec`.
 4. `iscc packaging\windows\wahoo.iss`.
 
-The installer ends up in `dist\`. It is unsigned, so SmartScreen shows "More info → Run
+PyInstaller output goes to `build\pyinstaller\` and the installer to
+`build\installer\` (`build/` is already git-ignored). It is unsigned, so SmartScreen shows "More info → Run
 anyway" the first time.
 
 ## Error handling
