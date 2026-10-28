@@ -185,8 +185,9 @@ background thread with the same `start()` / `stop()` / `post` events as `LogFoll
 
 - **Resolve:** loop on `pylsl.resolve_byprop` (by `source_id` when given, else by
   `type`), posting `("cps_status", "waiting for CPS LSL stream")` until a stream is found.
-  When several streams match and no `source_id` was given, use the first and post
-  `("cps_status", "<n> CPS streams, using <source_id>")`.
+  When several streams match and no `source_id` was given, use the first by `source_id` order
+  and name it in the status bar: `cps_file` is posted as `"<name> (1 of <n> CPS streams)"`.
+  (A `cps_status` message would be overwritten by "connected" a moment later.)
 - **Open:**
   - open an inlet with `recover=False`;
   - read the channel labels from `desc/channels/channel/label`, falling back to the
