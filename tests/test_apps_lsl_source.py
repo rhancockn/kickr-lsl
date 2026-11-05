@@ -112,6 +112,7 @@ def test_reports_disconnected_when_the_outlet_goes_away():
         collect(q, lambda ev: ("cps_event", {"kind": "connected"}) in ev)
         del out
         gc.collect()
-        collect(q, lambda ev: ("cps_event", {"kind": "disconnected"}) in ev, timeout=20.0)
+        events = collect(q, lambda ev: ("cps_status", WAITING) in ev, timeout=20.0)
+        assert events.count(("cps_event", {"kind": "disconnected"})) == 1
     finally:
         stop_quickly(f)

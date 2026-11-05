@@ -17,6 +17,7 @@ from pylsl.util import LostError
 Post = Callable[[tuple[str, Any]], None]
 STREAM_TYPE = "CPS"
 WAITING = "waiting for CPS LSL stream"
+FORGET_AFTER_S = 2.0  # how long the resolver keeps listing a stream after its outlet vanishes
 
 
 def channel_labels(info: pylsl.StreamInfo) -> list[str]:
@@ -46,6 +47,7 @@ class LslFollower:
         self.source_id, self.stream_type = source_id, stream_type
         self.resolve_s, self.pull_s = resolve_s, pull_s
         self._stopping = threading.Event()
+        self._connected = False
         self._thread = threading.Thread(target=self._run, name="lsl-follower", daemon=True)
 
     def start(self) -> None:
@@ -57,7 +59,11 @@ class LslFollower:
             self._thread.join(self.resolve_s + self.pull_s + 5.0)
 
     def _run(self) -> None:
-        holder = [self._new_resolver()]
+        try:
+            holder = [self._new_resolver()]  # holder must be the resolver's only owner (see finally)
+        except Exception as e:
+            self._post(("cps_status", f"LSL error: {e}"))
+            return
         try:
             self._loop(holder[0])
         finally:
@@ -66,13 +72,14 @@ class LslFollower:
 
     def _new_resolver(self) -> pylsl.ContinuousResolver:
         if self.source_id:
-            return pylsl.ContinuousResolver("source_id", self.source_id, forget_after=2.0)
-        return pylsl.ContinuousResolver("type", self.stream_type, forget_after=2.0)
+            return pylsl.ContinuousResolver("source_id", self.source_id, forget_after=FORGET_AFTER_S)
+        return pylsl.ContinuousResolver("type", self.stream_type, forget_after=FORGET_AFTER_S)
 
     def _loop(self, resolver: pylsl.ContinuousResolver) -> None:
         waiting = False
+        lost: set[str] = set()  # uids of streams whose outlet vanished, skipped until the resolver forgets them
         while not self._stopping.is_set():
-            found = self._resolve(resolver)
+            found = self._resolve(resolver, lost)
             if found is None:
                 if not waiting:
                     self._post(("cps_status", WAITING))
@@ -82,16 +89,21 @@ class LslFollower:
             try:
                 self._follow(*found)
             except LostError:
-                self._post(("cps_event", {"kind": "disconnected"}))
+                lost.add(found[0].uid())
+                if self._connected:
+                    self._post(("cps_event", {"kind": "disconnected"}))
             except Exception as e:
                 self._post(("cps_status", f"LSL error: {e}"))
                 self._stopping.wait(self.resolve_s)
+            self._connected = False
 
-    def _resolve(self, resolver: pylsl.ContinuousResolver) -> tuple[pylsl.StreamInfo, int] | None:
+    def _resolve(self, resolver: pylsl.ContinuousResolver, lost: set[str]) -> tuple[pylsl.StreamInfo, int] | None:
         """The stream to follow and how many matched; None if none within resolve_s (or on stop)."""
         started = time.monotonic()
         while not self._stopping.is_set():
             streams = resolver.results()
+            lost &= {info.uid() for info in streams}  # forgotten: a restarted outlet gets a new uid anyway
+            streams = [info for info in streams if info.uid() not in lost]
             elapsed = time.monotonic() - started
             # by type, wait out resolve_s so every stream that answers is counted
             if streams and (self.source_id or elapsed >= self.resolve_s):
@@ -116,6 +128,7 @@ class LslFollower:
             name = full.name() if matched == 1 else f"{full.name()} (1 of {matched} {self.stream_type} streams)"
             self._post(("cps_file", name))
             self._post(("cps_event", {"kind": "connected"}))
+            self._connected = True
             while not self._stopping.is_set():
                 values, t = inlet.pull_sample(timeout=self.pull_s)
                 if values is not None:
