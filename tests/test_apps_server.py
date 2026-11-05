@@ -299,3 +299,46 @@ def test_log_pane_is_capped(win):
     text = win.w.log.get("1.0", "end").splitlines()
     assert len([t for t in text if t]) <= MAX_LOG_LINES
     assert text[-1] == f"[cps] line {MAX_LOG_LINES + 9}" or text[-2] == f"[cps] line {MAX_LOG_LINES + 9}"
+
+
+def test_second_restart_click_does_not_hurry(win):
+    win.w.start_services()
+    win.w.restart()
+    win.w.restart()
+    assert win.sups[0].stops == 1
+
+
+def test_close_during_a_pending_restart_is_not_a_hurry(win):
+    win.w.start_services()
+    win.w.restart()
+    win.w.close()
+    assert win.sups[0].stops == 1
+    win.w.close()
+    assert win.sups[0].stops == 2
+    win.sups[0].running = False
+    win.w._pump()
+    assert win.w.destroyed and len(win.sups) == 1
+
+
+def test_ticking_with_nothing_running_only_records_the_choice(win):
+    win.w.ftms_var.set(False)
+    win.w.toggle_ftms()
+    assert win.w.ftms_text.get() != "off"
+    assert win.w.status.ftms != "off"
+
+
+def test_restart_waits_a_pump_after_the_old_supervisor_stops(win):
+    win.w.start_services()
+    win.w.restart()
+    handle = win.w.handle
+
+    def handle_then_stop(kind, payload):
+        handle(kind, payload)
+        win.sups[0].running = False  # the old supervisor finishes while events are drained
+
+    win.w.handle = handle_then_stop
+    win.w.events.put(("stopped", "old"))
+    win.w._pump()
+    assert len(win.sups) == 1
+    win.w._pump()
+    assert len(win.sups) == 2

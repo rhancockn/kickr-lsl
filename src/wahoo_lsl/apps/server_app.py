@@ -183,8 +183,8 @@ class ServerWindow:
         self._render()
 
     def restart(self) -> None:
-        if self._closing:
-            return
+        if self._closing or self._restart_pending:
+            return  # a second stop() would hurry the shutdown
         if self.supervisor is not None and self.supervisor.running:
             self._restart_pending = True
             self.supervisor.stop()
@@ -198,12 +198,13 @@ class ServerWindow:
                 "Wahoo Server", "A client is controlling the trainer. Turn off FTMS control anyway?"):
             self.ftms_var.set(True)
             return
+        if not self._running():
+            return  # only records the choice: the next start sets the row
         if enabled:
             self.status.ftms = "starting"
         else:
             self.status.ftms, self.status.client = "off", ""
-        if self._running():
-            self.supervisor.set_ftms(enabled)
+        self.supervisor.set_ftms(enabled)
         self._render()
 
     def open_logs(self) -> None:
@@ -227,11 +228,12 @@ class ServerWindow:
         if self.status.client and self._running() and not self._confirm(
                 "Wahoo Server", "A client is controlling the trainer. Stop anyway?"):
             return
+        stopping = self._restart_pending  # the supervisor is already stopping in order: do not hurry it
         self._closing, self._restart_pending = True, False
         for widget in (*self.buttons, self.ftms_box):
             widget.configure(state="disabled")
         self.state_text.set("Stopping: spinning down to 0 W…")
-        if self.supervisor is not None:
+        if self.supervisor is not None and not stopping:
             self.supervisor.stop()
 
     # --- events -------------------------------------------------------------
@@ -301,6 +303,7 @@ class ServerWindow:
     def _pump(self) -> None:
         if self.destroyed:
             return
+        was_running = self._running()  # a stale "stopped" may still be queued if it only just stopped
         while True:
             try:
                 kind, payload = self.events.get_nowait()
@@ -315,7 +318,7 @@ class ServerWindow:
         if self._close_requested:
             self._close_requested = False
             self.close()
-        if self._restart_pending and not self._running():
+        if self._restart_pending and not was_running and not self._running():
             self._restart_pending = False
             self.start_services()
         if self._closing and not self._running():
