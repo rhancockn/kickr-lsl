@@ -198,3 +198,24 @@ def test_line_sink_posts_lines_and_appends_to_file(tmp_path):
     sink.close()
     assert posted == [("line", "[ftms] a"), ("line", "[cps] b"), ("line", "[cps] c")]
     assert (tmp_path / "logs" / "server.log").read_text(encoding="utf-8") == "[ftms] a\n[cps] b\n[cps] c\n"
+
+
+def test_failing_ftms_stop_does_not_orphan_cps_and_one_stopped_is_posted(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    sup, events, _ = make(cmds, port, confirm=lambda h, p: None)
+    sup.start()
+    wait_for(lambda: ("supervisor", "running") in events)
+
+    def boom(*a, **k):
+        raise RuntimeError("cannot stop")
+
+    ftms = sup.children["ftms"]
+    ftms.stop = boom
+    sup.stop()
+    sup.join(30)
+    ftms.proc.kill()  # the test made its stop fail: clean it up ourselves
+    ftms.proc.wait()
+    assert not sup.running
+    assert "cps" in order(o)  # the CPS child was still stopped
+    assert [e for e in events if e[0] == "stopped"] == [("stopped", "stopped")]

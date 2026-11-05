@@ -55,8 +55,8 @@ In `ftms.json`, `ftms.host` must be a loopback host: `127.0.0.1`, `::1` or `loca
 
 | Row | Meaning |
 |---|---|
-| Services | `starting` until the CPS logger has run for about 2 s, then `running`; `stopping: spinning down to 0 W…` while closing; or a config error. |
-| Trainer control (FTMS) | `starting`, `ready`, `reconnecting`, `stopped` or `off` (FTMS control unticked). |
+| Services | `starting` until the CPS logger has run for about 2 s, then `running`; `stopping: spinning down to 0 W…` while closing; `stopped (<reason>)`, for example `stopped (CPS logger exited with code 1)`, when a service crashes (click **Restart services** to start again); or a config error. |
+| Trainer control (FTMS) | `starting`, `ready`, `reconnecting`, `stopped (<reason>)` or `off` (FTMS control unticked). |
 | Trainer data (CPS) | `starting`, `streaming`, `reconnecting` or `stopped`. |
 | LSL stream | The `source_id` of the stream this server publishes. |
 | FTMS client | The peer connected to the FTMS service (for example the dashboard), if any. |
@@ -78,6 +78,8 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 - **Open dashboard** starts Wahoo Dashboard.
 
 **Closing.** If an FTMS client is connected you are asked to confirm. The server then spins the trainer down to 0 W, checks it, and stops both services. A second close while it is waiting skips the waits. Closing during a restart is still an ordered stop.
+
+**The 0 W check with a client connected.** The FTMS service has a single client slot. While a client (the dashboard, a script or MATLAB) is connected, the server's 0 W check cannot take that slot and times out after about 3 s; the log shows a line such as `0 W check: ... timed out ...`. This is expected, not a fault. The FTMS service then spins the trainer down to 0 W itself as it stops (or when the client disconnects), so the trainer still ends at 0 W. This applies to closing the window and to unticking FTMS control.
 
 **Config errors.** If a config file is missing or invalid, the Services row shows the error. Fix the file and click **Restart services**.
 

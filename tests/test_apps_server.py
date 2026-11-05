@@ -3,6 +3,8 @@ import json
 import queue
 import shutil
 import socket
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -128,6 +130,27 @@ def test_load_configs_names_the_bad_file(tmp_path):
         load_configs(tmp_path)
 
 
+def wait_until(cond, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while not cond() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert cond()
+
+
+def test_follower_is_stopped_off_the_tk_thread(win):
+    seen = []
+    win.w.handle("line", f"[cps] {P}LSL outlet KICKR-CPS-aaa: 3 channels (power_w)")
+    win.followers[0].stop = lambda: seen.append(threading.current_thread())
+    win.w.handle("line", f"[cps] {P}LSL outlet KICKR-CPS-bbb: 3 channels (power_w)")
+    wait_until(lambda: seen)
+    assert seen[0] is not threading.main_thread()
+
+
+def test_acquire_lock_raises_oserror_when_the_folder_is_unwritable(tmp_path):
+    with pytest.raises(OSError):  # distinct from None, which means another process holds the lock
+        acquire_lock(tmp_path / "missing" / "server.lock")
+
+
 def test_acquire_lock_is_exclusive(tmp_path):
     first = acquire_lock(tmp_path / "server.lock")
     assert first is not None
@@ -220,7 +243,7 @@ def test_follower_bound_to_this_servers_stream(win):
     assert [(f.source_id, f.started) for f in win.followers] == [("KICKR-CPS-aaa", 1)]
     assert win.w.stream_text.get() == "KICKR-CPS-aaa"
     win.w.handle("line", f"[cps] {P}LSL outlet KICKR-CPS-bbb: 3 channels (power_w)")
-    assert win.followers[0].stopped == 1
+    wait_until(lambda: win.followers[0].stopped == 1)  # stopped off the Tk thread
     assert [f.source_id for f in win.followers] == ["KICKR-CPS-aaa", "KICKR-CPS-bbb"]
 
 
@@ -263,7 +286,7 @@ def test_close_asks_when_a_client_is_connected(win):
     win.answer = True
     win.w.close()
     assert win.sups[0].stops == 1
-    assert win.w.state_text.get().startswith("Stopping")
+    assert win.w.state_text.get().startswith("stopping")
     win.w.close()  # second close hurries
     assert win.sups[0].stops == 2
     win.w._pump()

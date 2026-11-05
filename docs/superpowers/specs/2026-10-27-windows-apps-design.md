@@ -108,7 +108,9 @@ runs on a background thread:
   1. if `ftms_enabled`: start `ftms` and wait for its port (`timings.port_wait_s`; the child
      exiting or a stop request ends the wait);
   2. start `cps`.
-  A failure leaves the state at `stopped` with a reason.
+  An FTMS start-up failure (port timeout, or exit during start-up) turns FTMS off, posts
+  `("ftms", "stopped (<reason>)")` and still starts `cps`. Only a CPS failure or a start error
+  ends the session, with `stopped` and a reason.
 - **FTMS on/off at runtime:** `set_ftms(enabled)` only records the request; the supervisor
   thread carries it out in its watch loop, so starts and stops never overlap.
   - **Off:** `confirm_zero(host, port)` (if the port was reached), then stop `ftms` only.
@@ -298,7 +300,7 @@ anyway" the first time.
 | FTMS port in use by another program at launch | "another program is using host:port" message; exit |
 | FTMS control switched off | 0 W check, FTMS service stopped; CPS logger and LSL keep running; dashboard target panel shows the service unreachable |
 | FTMS service exits on its own (or fails to start after being switched on, e.g. another device holds control) | Only FTMS stops; FTMS row shows the reason; checkbox unticked; CPS keeps running |
-| FTMS never opens its port | `stopped (FTMS service did not open host:port within N s)`; CPS is not started |
+| FTMS never opens its port | FTMS turned off; FTMS row shows `stopped (FTMS service did not open host:port within N s)`; checkbox unticked; CPS is still started |
 | CPS logger exits | FTMS is stopped (0 W check first); the state shows the exit code; Restart available |
 | Close with a client connected | Confirmation prompt, then ordered shutdown |
 | Close during shutdown | Hurry: skips the grace periods |

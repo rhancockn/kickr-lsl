@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 import tkinter as tk
 from pathlib import Path
@@ -57,7 +58,9 @@ def attach_hidden_console() -> None:
 
 
 def acquire_lock(path: Path) -> IO[str] | None:
-    """An exclusive OS lock on path, held while the returned file stays open; None if another process holds it."""
+    """An exclusive OS lock on path, held while the returned file stays open; None if another process holds it.
+
+    Raises OSError if the file cannot be opened (for example an unwritable data folder)."""
     f = open(path, "a+")
     try:
         if sys.platform == "win32":
@@ -232,7 +235,7 @@ class ServerWindow:
         self._closing, self._restart_pending = True, False
         for widget in (*self.buttons, self.ftms_box):
             widget.configure(state="disabled")
-        self.state_text.set("Stopping: spinning down to 0 W…")
+        self.state_text.set(STATES["stopping"])
         if self.supervisor is not None and not stopping:
             self.supervisor.stop()
 
@@ -271,8 +274,8 @@ class ServerWindow:
         sid = self.status.stream
         if not sid or (self.follower is not None and self.follower.source_id == sid):
             return
-        if self.follower is not None:
-            self.follower.stop()
+        if self.follower is not None:  # stop() can join for seconds: keep it off the Tk thread
+            threading.Thread(target=self.follower.stop, name="follower-stop", daemon=True).start()
         self.follower = self._make_follower(sid)
         self.follower.start()
 
@@ -358,7 +361,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if sys.stderr is not None:  # None in the windowed build
             print(f"wahoo-server: cannot open a window: {e}", file=sys.stderr)
         return 2
-    lock = acquire_lock(home / LOCK_FILE)  # held until the process exits
+    try:
+        lock = acquire_lock(home / LOCK_FILE)  # held until the process exits
+    except OSError as e:
+        root.withdraw()
+        messagebox.showerror("Wahoo Server", f"Cannot write to {home}: {e}")
+        root.destroy()
+        return 1
     host, port = service_address(home)
     problem = None
     if lock is None:

@@ -85,8 +85,10 @@ class ServerSupervisor:
         finally:
             if self.children:
                 self.post(("supervisor", "stopping"))
-            self._shutdown()
-            self.post(("stopped", reason))
+            try:
+                self._shutdown()
+            finally:
+                self.post(("stopped", reason))
 
     def _start_and_watch(self) -> str:
         if self._want_ftms:
@@ -139,9 +141,12 @@ class ServerSupervisor:
         ftms = self.children.get("ftms")
         if ftms is not None:
             self._confirm_zero(ftms)
-        for label in ("ftms", "cps"):
+        for label in ("ftms", "cps"):  # each in its own try: one failure must not orphan the other
             if label in self.children:
-                self._stop_child(label)
+                try:
+                    self._stop_child(label)
+                except Exception as e:
+                    self._say(f"could not stop the {NAMES[label]}: {e}")
 
     def _stop_child(self, label: str) -> None:
         child = self.children.pop(label)
