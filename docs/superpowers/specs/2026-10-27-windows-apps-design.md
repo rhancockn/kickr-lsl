@@ -10,7 +10,8 @@ Package the tools as two standalone Windows apps, installed together:
 
 - **Wahoo Server** — opening it starts the FTMS control service and the CPS logger/LSL
   streamer and shows their status in a small window. Closing it spins the trainer down and
-  stops both.
+  stops both. FTMS control can be switched off in the window (it is on at every launch), so
+  another app or device can control the trainer while data logging and LSL keep running.
 - **Wahoo Dashboard** — the existing test dashboard, opened only when manual control is
   needed. It reads CPS data from the LSL stream and controls the trainer through the FTMS
   service.
@@ -100,19 +101,31 @@ It reuses, without editing, from `wahoo_lsl.dashboard.launcher`:
 
 `Supervisor` is not reused, because it always starts the dashboard child.
 
-`ServerSupervisor(commands, host, port, out, timings, confirm=confirm_zero)` runs on a
-background thread:
+`ServerSupervisor(commands, host, port, out, post, timings, confirm=confirm_zero, ftms_enabled=True)`
+runs on a background thread:
 
 - **Start:**
-  1. start `ftms`;
-  2. wait for its port (`timings.port_wait_s`; the child exiting or a stop request ends the wait);
-  3. start `cps`.
+  1. if `ftms_enabled`: start `ftms` and wait for its port (`timings.port_wait_s`; the child
+     exiting or a stop request ends the wait);
+  2. start `cps`.
   A failure leaves the state at `stopped` with a reason.
-- **Watch:** poll the children. If either exits, stop the other with the shutdown sequence
-  below and set the state to `stopped (<label> exited with code N)`. The window stays open.
+- **FTMS on/off at runtime:** `set_ftms(enabled)` only records the request; the supervisor
+  thread carries it out in its watch loop, so starts and stops never overlap.
+  - **Off:** `confirm_zero(host, port)` (if the port was reached), then stop `ftms` only.
+    Posts `("ftms", "off")`.
+  - **On:** start `ftms` and wait for its port as at start-up (without stopping `cps`).
+    Posts `("ftms", "on")`; if it exits or times out, posts
+    `("ftms", "stopped (<reason>)")`.
+  - The `cps` child, its log file and the LSL stream are never touched.
+- **Watch:** poll the children.
+  - If `cps` exits, stop `ftms` with the shutdown sequence below and end the session with
+    `stopped (CPS logger exited with code N)`. The window stays open.
+  - If `ftms` exits on its own, only it is gone: post
+    `("ftms", "stopped (FTMS service exited with code N)")` and keep `cps` running.
+    The window unticks FTMS control, and ticking it again starts the service.
 - **Stop:** shutdown in this order:
   1. `confirm_zero(host, port)`, if the port was reached and FTMS is still running;
-  2. stop `ftms`;
+  2. stop `ftms` (if running);
   3. stop `cps`.
   Grace periods come from `Timings`. A second close request skips the grace periods
   (hurry), as in the launcher.
@@ -142,17 +155,29 @@ supervisor) followed by the existing log text.
 
 | field | values | set by (existing log text) |
 |---|---|---|
-| `ftms` | starting · ready · reconnecting · stopped | `FTMS control ready at 0 W` → ready; `FTMS connection to … lost` → reconnecting; `FTMS reconnect attempt` → reconnecting |
+| `ftms` | starting · ready · reconnecting · stopped · off | `FTMS control ready at 0 W` → ready; `FTMS connection to … lost` → reconnecting; `FTMS reconnect attempt` → reconnecting |
 | `client` | none · `<peer>` | `Client connected: <peer>` → peer; `Client disconnected:` → none |
 | `cps` | starting · streaming · reconnecting · stopped | `Streaming from …` / `Reconnected to …` → streaming; `Connection to … lost` / `Reconnect attempt` → reconnecting |
 | `stream` | `—` · `<source_id>` | `LSL outlet <source_id>: …` |
 
-The supervisor sets `ftms` and `cps` to `stopped` when their child ends. A test asserts that
+The window sets `ftms` to `off` when FTMS control is switched off, to `starting` when it is
+switched on, and `ftms` and `cps` to `stopped` when their child ends. A test asserts that
 every pattern still appears in the source module that logs it, so a reworded message fails a
 test instead of silently breaking the window.
 
 ### Window (`server_app.py`)
 
+- **FTMS control checkbox:** "FTMS control (untick to let another app or device control the
+  trainer)". Ticked at every launch; the choice is not saved.
+  - **Untick:** if a client is connected, ask "A client is controlling the trainer. Turn off
+    FTMS control anyway?" (No → re-tick). Then `supervisor.set_ftms(False)`; the FTMS row
+    shows `off`, the client row `none`.
+  - **Tick:** `supervisor.set_ftms(True)`; the FTMS row shows `starting`, then `ready`.
+  - The FTMS service exiting on its own unticks the box and shows
+    `stopped (FTMS service exited with code N)` in the FTMS row.
+  - **Restart services** and the first start use the current checkbox value.
+  - With no supervisor running (stopped or config error), toggling only changes what the
+    next start uses.
 - **Rows:** Trainer control (FTMS), Trainer data (CPS) + LSL stream name, FTMS client, and
   Power (live W from an `LslFollower` bound to this server's own stream: it is created with
   the `source_id` from the `LSL outlet` line, so another CPS stream on the network is never shown;
@@ -167,9 +192,12 @@ test instead of silently breaking the window.
   anyway?". Then disable the buttons, show "Stopping: spinning down to 0 W…", run the
   supervisor's stop, and destroy the window when it finishes. A second close skips the
   grace periods.
-- **Single instance:** before starting anything, if a TCP connect to the FTMS
-  `host:port` (from `ftms.json`) succeeds, show "Wahoo Server is already running (or
-  another program is using <host>:<port>)" and exit.
+- **Single instance:** before starting anything:
+  1. take an exclusive OS lock on `<data_dir>/server.lock` (held open for the app's lifetime;
+     `msvcrt.locking` on Windows, `fcntl.flock` elsewhere). If it is held, show "Wahoo Server
+     is already running" and exit. This works when FTMS is off and nothing listens on the port.
+  2. if a TCP connect to the FTMS `host:port` (from `ftms.json`) succeeds, show "Another
+     program is using <host>:<port> (the FTMS port in ftms.json)" and exit.
 - **Config errors** (`ftms.json` / `config.json` missing or invalid) are shown in the window
   with the file path. The services are not started, and Restart retries after the file is
   fixed.
@@ -266,9 +294,12 @@ anyway" the first time.
 | Situation | Behaviour |
 |---|---|
 | Config missing or invalid | The server window shows the path and the error; services are not started; Restart retries |
-| FTMS port in use at launch | "already running" message; exit |
+| Server already running (lock held) | "already running" message; exit |
+| FTMS port in use by another program at launch | "another program is using host:port" message; exit |
+| FTMS control switched off | 0 W check, FTMS service stopped; CPS logger and LSL keep running; dashboard target panel shows the service unreachable |
+| FTMS service exits on its own (or fails to start after being switched on, e.g. another device holds control) | Only FTMS stops; FTMS row shows the reason; checkbox unticked; CPS keeps running |
 | FTMS never opens its port | `stopped (FTMS service did not open host:port within N s)`; CPS is not started |
-| A child exits | The other is stopped (FTMS first with the 0 W check); the state shows which one and its exit code; Restart available |
+| CPS logger exits | FTMS is stopped (0 W check first); the state shows the exit code; Restart available |
 | Close with a client connected | Confirmation prompt, then ordered shutdown |
 | Close during shutdown | Hurry: skips the grace periods |
 | Dashboard: no CPS stream | CPS status "waiting for CPS LSL stream"; the FTMS panel works independently |
@@ -281,8 +312,10 @@ anyway" the first time.
   pattern-exists-in-source guard.
 - **`supervisor`:** fake children (short Python scripts, following the existing launcher
   tests):
-  - start order, and the port wait before CPS;
-  - a child exit stops the other and sets the state;
+  - start order, and the port wait before CPS; CPS only when started with FTMS disabled;
+  - a CPS exit stops FTMS and ends the session; an FTMS exit stops only FTMS;
+  - `set_ftms(False)` runs the 0 W check and stops only FTMS; `set_ftms(True)` starts it
+    again while CPS keeps running (same CPS process);
   - stop order with the 0 W check called before FTMS stops;
   - Restart;
   - hurry on a second stop;
@@ -298,7 +331,8 @@ anyway" the first time.
   env); `worker_argv` packaged and unpackaged (monkeypatched `sys.frozen`).
 - **`worker`:** dispatch to both CLIs with the arguments unchanged (monkeypatched `main`s);
   usage for a bad kind.
-- **Apps:** argument parsing and config-derived defaults; the single-instance check; Tk
+- **Apps:** argument parsing and config-derived defaults; the single-instance lock and port
+  check; the FTMS checkbox (untick/tick, confirmation, FTMS exit unticks it); Tk
   smoke tests (retitles; the window builds and closes) in the same style as the existing
   dashboard tests.
 - The whole existing suite stays green, and `git diff main --stat` shows no existing file
@@ -314,7 +348,12 @@ anyway" the first time.
 6. Edit a config, then Restart services: the change takes effect.
 7. A second server instance shows the "already running" message.
 8. LabRecorder on another PC on the private network sees the stream.
-9. Uninstall: `%ProgramData%\wahoo-lsl` configs and logs remain.
+9. Untick FTMS control while recording: no gap in the CPS log or LSL stream; another
+   app/device (e.g. a training app) can connect to the KICKR and control resistance while
+   the CPS logger stays connected. Tick it again after the other app disconnects: FTMS ready.
+10. Close with FTMS control off: no 0 W check, both workers gone. Open a second server
+    while FTMS is off: "already running".
+11. Uninstall: `%ProgramData%\wahoo-lsl` configs and logs remain.
 
 ## Out of scope
 

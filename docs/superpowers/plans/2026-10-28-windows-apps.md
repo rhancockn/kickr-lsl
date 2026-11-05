@@ -31,7 +31,8 @@
 2. **`ftms.json` host `0.0.0.0` (or `::`).** The single-instance check, `confirm_zero`, and the dashboard connect to `127.0.0.1` (or `::1`), never to the wildcard address, which fails on Windows (Tasks 1, 5, 6).
 3. **Other CPS streams on the lab network.** The server window shows only its own stream's power, bound by `source_id`. The dashboard names the stream it picked and says how many it saw (Tasks 4, 6).
 4. **A child crashes mid-session.** The other child is stopped, FTMS first with the 0 W check. The window stays open showing which child exited and its exit code, and Restart works (Tasks 3, 6).
-5. **The close button pressed twice during a slow shutdown.** The second press skips the grace periods instead of being ignored or stopping twice (Tasks 3, 6).
+5. **FTMS control switched off and on during a recording.** The CPS logger process, its log file and the LSL stream continue untouched; only the FTMS child stops and starts. An FTMS failure while switching on unticks the box rather than ending the session (Tasks 3, 6).
+6. **The close button pressed twice during a slow shutdown.** The second press skips the grace periods instead of being ignored or stopping twice (Tasks 3, 6).
 
 The Windows-only paths (hidden console + CTRL_BREAK, PyInstaller collection, installer) cannot run here. They are covered by the manual checklist in `docs/windows-apps.md` (Task 7).
 
@@ -286,7 +287,8 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 - Produces:
   - `RULES`
   - `ServerStatus` dataclass: fields `ftms: str = "starting"`, `cps: str = "starting"`, `client: str = ""`, `stream: str = ""`
-  - methods `update(line: str) -> bool`, `starting() -> None`, `stopped() -> None`
+  - methods `update(line: str) -> bool`, `starting(ftms_enabled: bool = True) -> None`, `stopped() -> None`
+  - `ftms` also takes the value `"off"`, which the window sets when FTMS control is switched off.
 - A relayed line looks like `[ftms] 2026-10-28 10:00:00,000 INFO    wahoo_lsl.ftms.server: Client connected: ('127.0.0.1', 50000)`. The label is `ftms`, `cps` or `server`.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_apps_server_status.py`:
@@ -361,6 +363,8 @@ def test_starting_and_stopped_keep_the_stream_name():
     assert (st.ftms, st.cps, st.client, st.stream) == ("stopped", "stopped", "", "KICKR-CPS-f24bfa")
     st.starting()
     assert (st.ftms, st.cps, st.client) == ("starting", "starting", "")
+    st.starting(ftms_enabled=False)
+    assert (st.ftms, st.cps) == ("off", "starting")
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -397,7 +401,7 @@ RULES: tuple[tuple[str, re.Pattern[str], str, str | None], ...] = (
 
 @dataclass
 class ServerStatus:
-    ftms: str = "starting"  # starting | ready | reconnecting | stopped
+    ftms: str = "starting"  # starting | ready | reconnecting | stopped | off
     cps: str = "starting"  # starting | streaming | reconnecting | stopped
     client: str = ""  # peer of the connected FTMS client; "" = none
     stream: str = ""  # LSL source_id of this server's CPS stream; "" = not yet known
@@ -418,8 +422,9 @@ class ServerStatus:
                 changed = True
         return changed
 
-    def starting(self) -> None:
-        self.ftms = self.cps = "starting"
+    def starting(self, ftms_enabled: bool = True) -> None:
+        self.ftms = "starting" if ftms_enabled else "off"
+        self.cps = "starting"
         self.client = ""
 
     def stopped(self) -> None:
@@ -448,17 +453,22 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `src/wahoo_lsl/apps/supervisor.py`
-- Test: `tests/test_apps_supervisor.py` (uses the existing `tests/dashboard_fake_child.py` unchanged)
+- Test: `tests/test_apps_supervisor.py`. It uses the existing `tests/dashboard_fake_child.py` unchanged. If the off→on test needs a fake that sets `SO_REUSEADDR` to rebind its port, add a **new** helper `tests/apps_fake_child.py` (a copy plus that one line) rather than editing the existing one.
 
 **Interfaces:**
-- Consumes: `wahoo_lsl.dashboard.launcher.Child(label, argv, out, out_lock)` with `.poll()` and `.stop(grace_s, kill_after_s, hurry) -> int`; `Timings(port_wait_s, cps_early_exit_s, grace_s, kill_after_s, poll_s)`; `confirm_zero(host, port, ..., say=...)`.
+- Consumes: `wahoo_lsl.dashboard.launcher.Child(label, argv, out, out_lock)` with `.poll()`, `.proc` and `.stop(grace_s, kill_after_s, hurry) -> int`; `Timings(port_wait_s, cps_early_exit_s, grace_s, kill_after_s, poll_s)`; `confirm_zero(host, port, ..., say=...)`.
 - Produces:
   - `LineSink(post, log_path)` with `write`, `flush`, `close`.
-  - `ServerSupervisor(commands, host, port, out, post, timings=Timings(), confirm=None)` with `start()`, `stop()`, `join(timeout)`, `running`.
-  - It posts:
+  - `ServerSupervisor(commands, host, port, out, post, timings=Timings(), confirm=None, ftms_enabled=True)` with `start()`, `stop()`, `set_ftms(enabled)`, `join(timeout)`, `running`.
+  - Events it posts:
     - `("supervisor", "starting" | "running" | "stopping")`
-    - then exactly one `("stopped", reason)`, where reason is `"stopped"` or a sentence such as `"CPS logger exited with code 3"`.
+    - `("ftms", "on" | "off" | "stopped (<reason>)")` for the FTMS service only
+    - exactly one final `("stopped", reason)`
   - One instance runs one session; the window builds a new one to restart.
+- Rules:
+  - A CPS exit ends the session, stopping FTMS first with the 0 W check.
+  - An FTMS exit or start failure stops only FTMS: it posts `("ftms", "stopped (...)")`, and FTMS stays off until `set_ftms(True)`.
+  - `set_ftms` never touches the CPS child.
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_apps_supervisor.py`:
 
@@ -507,71 +517,132 @@ class Events(list):
         with self._lock:
             self.append(event)
 
-    def stopped(self):
-        return [p for k, p in list(self) if k == "stopped"]
+    def of(self, kind):
+        return [p for k, p in list(self) if k == kind]
 
 
-def make(commands, port, timings=FAST, confirm=None):
+def make(commands, port, timings=FAST, confirm=None, ftms_enabled=True):
     events, out = Events(), io.StringIO()
     sup = ServerSupervisor(commands, "127.0.0.1", port, out, events, timings,
-                           confirm=confirm if confirm is not None else (lambda h, p: None))
+                           confirm=confirm if confirm is not None else (lambda h, p: None),
+                           ftms_enabled=ftms_enabled)
     return sup, events, out
 
 
+def happy(tmp_path, port, cps_mode=()):
+    o = tmp_path / "order"
+    return o, {"ftms": fake("ftms", o, "listen", port), "cps": fake("cps", o, *cps_mode)}
+
+
 def test_starts_ftms_then_cps_and_stops_ftms_first(tmp_path):
-    port, o = free_port(), tmp_path / "order"
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
     calls = []
-    sup, events, out = make({"ftms": fake("ftms", o, "listen", port), "cps": fake("cps", o)}, port,
-                            confirm=lambda h, p: calls.append(order(o)))
+    sup, events, out = make(cmds, port, confirm=lambda h, p: calls.append(order(o)))
     sup.start()
     wait_for(lambda: ("supervisor", "running") in events)
     wait_for(lambda: "[cps] cps started" in out.getvalue())
     assert out.getvalue().index("[ftms] ftms started") < out.getvalue().index("[cps] cps started")
-    assert sup.running
+    assert events.of("ftms") == ["on"]
     sup.stop()
     sup.join(30)
     assert not sup.running
     assert calls == [[]]  # 0 W check ran before either child stopped
     assert order(o) == ["ftms", "cps"]
     assert ("supervisor", "stopping") in events
-    assert events.stopped() == ["stopped"]
+    assert events.of("stopped") == ["stopped"]
 
 
-def test_child_exit_stops_the_other(tmp_path):
-    port, o = free_port(), tmp_path / "order"
-    sup, events, _ = make({"ftms": fake("ftms", o, "listen", port), "cps": fake("cps", o, "exit", 3, 0.3)}, port)
+def test_ftms_disabled_runs_cps_only(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    calls = []
+    sup, events, out = make(cmds, port, confirm=lambda h, p: calls.append(1), ftms_enabled=False)
+    sup.start()
+    wait_for(lambda: ("supervisor", "running") in events)
+    sup.stop()
+    sup.join(30)
+    assert "[ftms]" not in out.getvalue()
+    assert calls == [] and order(o) == ["cps"]
+
+
+def test_cps_exit_ends_the_session_and_stops_ftms(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port, cps_mode=("exit", 3, 0.3))
+    sup, events, _ = make(cmds, port)
     sup.start()
     sup.join(30)
-    assert events.stopped() == ["CPS logger exited with code 3"]
+    assert events.of("stopped") == ["CPS logger exited with code 3"]
     assert order(o) == ["ftms"]  # FTMS was stopped gracefully
 
 
-def test_ftms_exit_during_startup_never_starts_cps(tmp_path):
+def test_ftms_exit_during_startup_keeps_cps(tmp_path):
     port, o = free_port(), tmp_path / "order"
     sup, events, out = make({"ftms": fake("ftms", o, "exit", 4, 0.1), "cps": fake("cps", o)}, port)
     sup.start()
+    wait_for(lambda: ("supervisor", "running") in events)
+    assert events.of("ftms") == ["stopped (FTMS service exited with code 4 during start-up)"]
+    assert sup.running
+    sup.stop()
     sup.join(30)
-    assert events.stopped() == ["FTMS service exited with code 4 during start-up"]
-    assert "[cps]" not in out.getvalue()
+    assert order(o) == ["cps"]
+    assert events.of("stopped") == ["stopped"]
 
 
-def test_port_timeout_skips_zero_check(tmp_path):
+def test_ftms_exit_while_running_keeps_cps(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    sup, events, _ = make(cmds, port)
+    sup.start()
+    wait_for(lambda: ("supervisor", "running") in events)
+    sup.children["ftms"].proc.kill()
+    wait_for(lambda: len(events.of("ftms")) == 2)
+    assert events.of("ftms")[1].startswith("stopped (FTMS service exited with code ")
+    assert sup.running and "ftms" not in sup.children
+    sup.stop()
+    sup.join(30)
+    assert order(o) == ["cps"]
+
+
+def test_port_timeout_turns_ftms_off_without_zero_check(tmp_path):
     port, o = free_port(), tmp_path / "order"
     calls = []
     t = Timings(port_wait_s=0.5, cps_early_exit_s=0.3, grace_s=5.0, kill_after_s=2.0, poll_s=0.05)
     sup, events, _ = make({"ftms": fake("ftms", o), "cps": fake("cps", o)}, port, t,
                           confirm=lambda h, p: calls.append(1))
     sup.start()
+    wait_for(lambda: ("supervisor", "running") in events)
+    assert events.of("ftms") == [f"stopped (FTMS service did not open 127.0.0.1:{port} within 0.5 s)"]
+    assert order(o) == ["ftms"]  # the silent FTMS child was stopped
+    sup.stop()
     sup.join(30)
-    assert events.stopped() == [f"FTMS service did not open 127.0.0.1:{port} within 0.5 s"]
-    assert calls == []
-    assert order(o) == ["ftms"]
+    assert calls == [] and order(o) == ["ftms", "cps"]
+
+
+def test_set_ftms_off_then_on_keeps_the_same_cps_process(tmp_path):
+    port = free_port()
+    o, cmds = happy(tmp_path, port)
+    calls = []
+    sup, events, _ = make(cmds, port, confirm=lambda h, p: calls.append(1))
+    sup.start()
+    wait_for(lambda: ("supervisor", "running") in events)
+    cps_pid = sup.children["cps"].proc.pid
+    sup.set_ftms(False)
+    wait_for(lambda: events.of("ftms") == ["on", "off"])
+    assert calls == [1] and order(o) == ["ftms"]
+    sup.set_ftms(True)
+    wait_for(lambda: events.of("ftms") == ["on", "off", "on"])
+    assert sup.children["cps"].proc.pid == cps_pid
+    sup.stop()
+    sup.join(30)
+    assert order(o) == ["ftms", "ftms", "cps"]
 
 
 def test_second_stop_skips_grace(tmp_path):
-    port, o = free_port(), tmp_path / "order"
+    port = free_port()
+    o, cmds = happy(tmp_path, port, cps_mode=("ignore",))
     t = Timings(port_wait_s=5.0, cps_early_exit_s=0.3, grace_s=60.0, kill_after_s=2.0, poll_s=0.05)
-    sup, events, _ = make({"ftms": fake("ftms", o, "listen", port), "cps": fake("cps", o, "ignore")}, port, t)
+    sup, events, _ = make(cmds, port, t)
     sup.start()
     wait_for(lambda: ("supervisor", "running") in events)
     time.sleep(0.3)  # let the cps child install its ignore handler
@@ -581,7 +652,7 @@ def test_second_stop_skips_grace(tmp_path):
     sup.stop()
     sup.join(30)
     assert time.monotonic() - t0 < 15
-    assert events.stopped() == ["stopped"]
+    assert events.of("stopped") == ["stopped"]
 
 
 def test_start_error_is_reported(tmp_path):
@@ -589,7 +660,7 @@ def test_start_error_is_reported(tmp_path):
     sup, events, _ = make({"ftms": [str(tmp_path / "missing-exe")], "cps": ["x"]}, port)
     sup.start()
     sup.join(30)
-    [reason] = events.stopped()
+    [reason] = events.of("stopped")
     assert reason.startswith("error: ")
 
 
@@ -612,10 +683,12 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'wahoo_lsl.apps.superv
 - [ ] **Step 3: Implement** `src/wahoo_lsl/apps/supervisor.py`:
 
 ```python
-"""Wahoo Server supervisor: the FTMS service, then the CPS logger, as child processes.
+"""Wahoo Server supervisor: the FTMS service (optional, switchable at runtime) and the CPS logger.
 
 Reuses the dashboard launcher's Child (relay, CTRL_BREAK -> terminate -> kill) and confirm_zero.
 One instance runs one session (start ... stop); the window builds a new one to restart.
+The CPS logger is the session: its exit ends it. The FTMS service can stop, fail or be switched
+off and on without touching the CPS logger, so recordings never see a gap.
 """
 from __future__ import annotations
 
@@ -654,9 +727,11 @@ class LineSink:
 
 class ServerSupervisor:
     def __init__(self, commands: dict[str, list[str]], host: str, port: int, out: IO[str], post: Post,
-                 timings: Timings = Timings(), confirm: Callable[[str, int], object] | None = None) -> None:
+                 timings: Timings = Timings(), confirm: Callable[[str, int], object] | None = None,
+                 ftms_enabled: bool = True) -> None:
         self.commands, self.host, self.port, self.out, self.post, self.t = commands, host, port, out, post, timings
         self._confirm = confirm
+        self._want_ftms = ftms_enabled  # set by the window; acted on by the supervisor thread
         self._lock = threading.Lock()  # shared with the Child relays: whole lines only
         self._stop, self._hurry = threading.Event(), threading.Event()
         self._thread: threading.Thread | None = None
@@ -677,6 +752,10 @@ class ServerSupervisor:
             self._hurry.set()
         self._stop.set()
 
+    def set_ftms(self, enabled: bool) -> None:
+        """Ask for the FTMS service to be started or stopped; the CPS logger is never touched."""
+        self._want_ftms = enabled
+
     def join(self, timeout: float | None = None) -> None:
         if self._thread is not None:
             self._thread.join(timeout)
@@ -695,34 +774,60 @@ class ServerSupervisor:
             self.post(("stopped", reason))
 
     def _start_and_watch(self) -> str:
-        ftms = self._start("ftms")
-        ready = self._wait_for_port(ftms)
-        if ready == "exited":
-            return f"{NAMES['ftms']} exited with code {ftms.poll()} during start-up"
-        if ready == "timeout":
-            return f"{NAMES['ftms']} did not open {self.host}:{self.port} within {self.t.port_wait_s:g} s"
-        if ready == "stopped":
+        if self._want_ftms:
+            self._start_ftms()
+        if self._stop.is_set():
             return "stopped"
-        self._port_ready = True
-        self._start("cps")
+        cps = self._start("cps")
         self.post(("supervisor", "running"))
         while not self._stop.wait(self.t.poll_s):
-            for label, child in self.children.items():
-                code = child.poll()
-                if code is not None:
-                    return f"{NAMES[label]} exited with code {code}"
+            code = cps.poll()
+            if code is not None:
+                return f"{NAMES['cps']} exited with code {code}"
+            ftms = self.children.get("ftms")
+            if ftms is not None and ftms.poll() is not None:
+                self._ftms_failed(f"{NAMES['ftms']} exited with code {ftms.poll()}")
+            elif ftms is None and self._want_ftms:
+                self._start_ftms()
+            elif ftms is not None and not self._want_ftms:
+                self._confirm_zero(ftms)
+                self._stop_child("ftms")
+                self.post(("ftms", "off"))
         return "stopped"
 
+    def _start_ftms(self) -> None:
+        """Start the FTMS service and wait for its port; on failure post why and leave FTMS off."""
+        ftms = self._start("ftms")
+        ready = self._wait_for_port(ftms)
+        if ready == "ready":
+            self._port_ready = True
+            self.post(("ftms", "on"))
+        elif ready == "exited":
+            self._ftms_failed(f"{NAMES['ftms']} exited with code {ftms.poll()} during start-up")
+        elif ready == "timeout":
+            self._ftms_failed(f"{NAMES['ftms']} did not open {self.host}:{self.port} within {self.t.port_wait_s:g} s")
+        # "stopped": the session is ending; _shutdown stops the child
+
+    def _ftms_failed(self, reason: str) -> None:
+        self._want_ftms = False
+        self._stop_child("ftms")
+        self.post(("ftms", f"stopped ({reason})"))
+
     def _shutdown(self) -> None:
+        ftms = self.children.get("ftms")
+        if ftms is not None:
+            self._confirm_zero(ftms)
         for label in ("ftms", "cps"):
-            child = self.children.get(label)
-            if child is None:
-                continue
-            if label == "ftms":
-                self._confirm_zero(child)
-            grace = 0.0 if self._hurry.is_set() else self.t.grace_s
-            code = child.stop(grace, self.t.kill_after_s, self._hurry)
-            self._say(f"{NAMES[label]} stopped (exit code {code})")
+            if label in self.children:
+                self._stop_child(label)
+
+    def _stop_child(self, label: str) -> None:
+        child = self.children.pop(label)
+        if label == "ftms":
+            self._port_ready = False
+        grace = 0.0 if self._hurry.is_set() else self.t.grace_s
+        code = child.stop(grace, self.t.kill_after_s, self._hurry)
+        self._say(f"{NAMES[label]} stopped (exit code {code})")
 
     def _confirm_zero(self, ftms: Child) -> None:
         if not self._port_ready or self._hurry.is_set() or ftms.poll() is not None:
@@ -764,6 +869,10 @@ class ServerSupervisor:
                 pass
 ```
 
+Notes:
+- Waiting for the FTMS port inside the watch loop blocks that loop for up to `port_wait_s`. That's acceptable: a stop request ends the wait, and a CPS exit is noticed right after.
+- `test_ftms_exit_while_running_keeps_cps` kills the FTMS child directly, so it does not write its order line.
+
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `python -m pytest tests/test_apps_supervisor.py -q`
@@ -774,7 +883,7 @@ Expected: all pass. The `ignore` test proves that the second `stop()` hurries.
 ```bash
 python -m pytest -q
 git add src/wahoo_lsl/apps/supervisor.py tests/test_apps_supervisor.py
-git commit -m "feat(apps): server supervisor (FTMS then CPS; 0 W check; hurry on second stop)
+git commit -m "feat(apps): server supervisor (switchable FTMS, CPS session, 0 W check, hurry)
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
@@ -1302,8 +1411,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 **Interfaces:**
 - Consumes: Tasks 1–4; `wahoo_lsl.dashboard.launcher.timings_for(ftms_cfg)`; `load_config`, `load_ftms_config`, `ConfigError`.
 - Produces:
-  - `attach_hidden_console()`, `service_address(home)`, `already_running(host, port)`, `load_configs(home) -> FtmsConfig`, `open_path(path)`, `launch(argv, cwd)`
-  - `ServerWindow(root, events, home, make_supervisor, make_follower, *, confirm, open_path, launch, monotonic)`, with `start_services()`, `restart()`, `open_logs()`, `open_dashboard()`, `handle(kind, payload)`, `close()`, `request_close()`, `destroyed`
+  - `attach_hidden_console()`, `acquire_lock(path) -> IO | None`, `service_address(home)`, `already_running(host, port)`, `load_configs(home) -> FtmsConfig`, `open_path(path)`, `launch(argv, cwd)`
+  - `ServerWindow(root, events, home, make_supervisor, make_follower, *, confirm, open_path, launch, monotonic)`, where `make_supervisor(cfg, ftms_enabled)` returns a supervisor with `start()`, `stop()`, `set_ftms(enabled)` and `running`. It has `ftms_var` (a `tk.BooleanVar`, True at launch), `toggle_ftms()`, `start_services()`, `restart()`, `open_logs()`, `open_dashboard()`, `handle(kind, payload)`, `close()`, `request_close()` and `destroyed`.
+  - Supervisor `("ftms", …)` events:
+    - `"on"`: no change; log lines drive the row;
+    - `"off"`: row `off`, client `none`;
+    - `"stopped (<reason>)"`: row shows it, client `none`, `ftms_var` unticked.
   - `main(argv)`
 
 - [ ] **Step 1: Write the failing tests** — `tests/test_apps_server.py`:
@@ -1320,8 +1433,8 @@ import pytest
 
 from wahoo_lsl.apps import server_app
 from wahoo_lsl.apps.paths import dashboard_argv
-from wahoo_lsl.apps.server_app import (MAX_LOG_LINES, STALE_S, ServerWindow, already_running, load_configs,
-                                       service_address)
+from wahoo_lsl.apps.server_app import (MAX_LOG_LINES, STALE_S, ServerWindow, acquire_lock, already_running,
+                                       load_configs, service_address)
 from wahoo_lsl.config import ConfigError
 from wahoo_lsl.ftms import DEFAULT_HOST, DEFAULT_PORT
 
@@ -1354,8 +1467,9 @@ def write_configs(home, host="127.0.0.1", port=47610):
 
 
 class FakeSupervisor:
-    def __init__(self, cfg):
-        self.cfg, self.started, self.stops, self.running = cfg, 0, 0, False
+    def __init__(self, cfg, ftms_enabled):
+        self.cfg, self.ftms_enabled, self.started, self.stops, self.running = cfg, ftms_enabled, 0, 0, False
+        self.ftms_requests = []
 
     def start(self):
         self.started += 1
@@ -1363,6 +1477,9 @@ class FakeSupervisor:
 
     def stop(self):
         self.stops += 1
+
+    def set_ftms(self, enabled):
+        self.ftms_requests.append(enabled)
 
 
 class FakeFollower:
@@ -1391,8 +1508,8 @@ def win(tk_root, tmp_path):
     ns.sups, ns.followers, ns.opened, ns.launched, ns.answer = [], [], [], [], True
     ns.clock = Clock()
 
-    def make_supervisor(cfg):
-        ns.sups.append(FakeSupervisor(cfg))
+    def make_supervisor(cfg, ftms_enabled):
+        ns.sups.append(FakeSupervisor(cfg, ftms_enabled))
         return ns.sups[-1]
 
     def make_follower(sid):
@@ -1435,15 +1552,71 @@ def test_load_configs_names_the_bad_file(tmp_path):
         load_configs(tmp_path)
 
 
+def test_acquire_lock_is_exclusive(tmp_path):
+    first = acquire_lock(tmp_path / "server.lock")
+    assert first is not None
+    assert acquire_lock(tmp_path / "server.lock") is None
+    first.close()
+    again = acquire_lock(tmp_path / "server.lock")
+    assert again is not None
+    again.close()
+
+
 def test_attach_hidden_console_is_a_no_op_off_windows(monkeypatch):
     monkeypatch.setattr(server_app.sys, "platform", "linux")
     server_app.attach_hidden_console()
 
 
 def test_start_services_starts_a_supervisor(win):
+    assert win.w.ftms_var.get() is True  # FTMS control is on at every launch
     win.w.start_services()
     assert len(win.sups) == 1 and win.sups[0].started == 1
-    assert win.sups[0].cfg.ftms.port == 47610
+    assert win.sups[0].cfg.ftms.port == 47610 and win.sups[0].ftms_enabled is True
+
+
+def test_start_follows_the_checkbox(win):
+    win.w.ftms_var.set(False)
+    win.w.toggle_ftms()  # nothing running: only changes what the next start uses
+    win.w.start_services()
+    assert win.sups[0].ftms_enabled is False
+    assert win.w.ftms_text.get() == "off"
+
+
+def test_untick_asks_when_a_client_is_connected(win):
+    win.w.start_services()
+    win.w.handle("line", f"[ftms] {P}Client connected: peer1")
+    win.answer = False
+    win.w.ftms_var.set(False)
+    win.w.toggle_ftms()
+    assert win.w.ftms_var.get() is True and win.sups[0].ftms_requests == []
+    win.answer = True
+    win.w.ftms_var.set(False)
+    win.w.toggle_ftms()
+    assert win.sups[0].ftms_requests == [False]
+    assert (win.w.ftms_text.get(), win.w.client_text.get()) == ("off", "none")
+
+
+def test_tick_turns_ftms_back_on(win):
+    win.w.start_services()
+    win.w.ftms_var.set(False)
+    win.w.toggle_ftms()
+    win.w.ftms_var.set(True)
+    win.w.toggle_ftms()
+    assert win.sups[0].ftms_requests == [False, True]
+    assert win.w.ftms_text.get() == "starting"
+    win.w.handle("line", f"[ftms] {P}FTMS control ready at 0 W (link_epoch 1)")
+    assert win.w.ftms_text.get() == "ready"
+
+
+def test_ftms_stopping_on_its_own_unticks_the_box(win):
+    win.w.start_services()
+    win.w.handle("line", f"[ftms] {P}Client connected: peer1")
+    win.w.handle("ftms", "stopped (FTMS service exited with code 1)")
+    assert win.w.ftms_var.get() is False
+    assert win.w.ftms_text.get() == "stopped (FTMS service exited with code 1)"
+    assert win.w.client_text.get() == "none"
+    win.w.handle("ftms", "off")
+    assert win.w.ftms_text.get() == "off"
 
 
 def test_config_error_shown_and_restart_retries(win):
@@ -1579,7 +1752,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
-from typing import Any, Callable, Sequence
+from typing import IO, Any, Callable, Sequence
 
 from wahoo_lsl.config import ConfigError, load_config
 from wahoo_lsl.dashboard.launcher import timings_for
@@ -1597,6 +1770,8 @@ PUMP_MS = 100
 STALE_S = 15.0
 MAX_LOG_LINES = 2000
 DASH = "—"
+LOCK_FILE = "server.lock"
+FTMS_HINT = "FTMS control (untick to let another app or device control the trainer)"
 STATES = {"starting": "starting", "running": "running", "stopping": "stopping: spinning down to 0 W…"}
 
 
@@ -1614,6 +1789,25 @@ def attach_hidden_console() -> None:
     hwnd = kernel32.GetConsoleWindow()
     if hwnd:
         ctypes.windll.user32.ShowWindow(hwnd, 0)  # SW_HIDE
+
+
+def acquire_lock(path: Path) -> IO[str] | None:
+    """An exclusive OS lock on path, held while the returned file stays open; None if another process holds it."""
+    f = open(path, "a+")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            f.seek(0)
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        return None
+    return f
 
 
 def service_address(home: Path) -> tuple[str, int]:
@@ -1659,7 +1853,7 @@ def launch(argv: Sequence[str], cwd: Path) -> None:
 
 class ServerWindow:
     def __init__(self, root: tk.Tk, events: queue.Queue, home: Path,
-                 make_supervisor: Callable[[FtmsConfig], Any], make_follower: Callable[[str], Any], *,
+                 make_supervisor: Callable[[FtmsConfig, bool], Any], make_follower: Callable[[str], Any], *,
                  confirm: Callable[[str, str], bool] = messagebox.askyesno,
                  open_path: Callable[[Path], None] = open_path,
                  launch: Callable[[Sequence[str], Path], None] = launch,
@@ -1690,6 +1884,10 @@ class ServerWindow:
         )):
             tk.Label(rows, text=title, anchor="w").grid(row=i, column=0, sticky="w", padx=(0, 12))
             tk.Label(rows, textvariable=var, anchor="w").grid(row=i, column=1, sticky="w")
+        self.ftms_var = tk.BooleanVar(value=True)  # on at every launch; not saved
+        self.ftms_box = tk.Checkbutton(root, text=FTMS_HINT, variable=self.ftms_var, command=self.toggle_ftms,
+                                       anchor="w", padx=8)
+        self.ftms_box.pack(fill="x")
         bar = tk.Frame(root, padx=8)
         bar.pack(fill="x")
         self.buttons = [
@@ -1712,9 +1910,10 @@ class ServerWindow:
             self.state_text.set(f"config error: {e}")
             self._append(f"[server] config error: {e}")
             return
-        self.status.starting()
+        enabled = self.ftms_var.get()
+        self.status.starting(enabled)
         self.state_text.set(STATES["starting"])
-        self.supervisor = self._make_supervisor(cfg)
+        self.supervisor = self._make_supervisor(cfg, enabled)
         self.supervisor.start()
         self._render()
 
@@ -1726,6 +1925,21 @@ class ServerWindow:
             self.supervisor.stop()
         else:
             self.start_services()
+
+    def toggle_ftms(self) -> None:
+        """The checkbox changed: start or stop only the FTMS service (the CPS logger keeps running)."""
+        enabled = self.ftms_var.get()
+        if not enabled and self.status.client and self._running() and not self._confirm(
+                "Wahoo Server", "A client is controlling the trainer. Turn off FTMS control anyway?"):
+            self.ftms_var.set(True)
+            return
+        if enabled:
+            self.status.ftms = "starting"
+        else:
+            self.status.ftms, self.status.client = "off", ""
+        if self._running():
+            self.supervisor.set_ftms(enabled)
+        self._render()
 
     def open_logs(self) -> None:
         self._open_path(self.home / LOG_DIR)
@@ -1749,8 +1963,8 @@ class ServerWindow:
                 "Wahoo Server", "A client is controlling the trainer. Stop anyway?"):
             return
         self._closing, self._restart_pending = True, False
-        for b in self.buttons:
-            b.configure(state="disabled")
+        for widget in (*self.buttons, self.ftms_box):
+            widget.configure(state="disabled")
         self.state_text.set("Stopping: spinning down to 0 W…")
         if self.supervisor is not None:
             self.supervisor.stop()
@@ -1766,6 +1980,12 @@ class ServerWindow:
         elif kind == "supervisor":
             if not self._closing:
                 self.state_text.set(STATES.get(payload, payload))
+        elif kind == "ftms":
+            if payload != "on":  # "off" or "stopped (<reason>)"; "on": the log lines drive the row
+                self.status.ftms, self.status.client = payload, ""
+                if payload != "off":
+                    self.ftms_var.set(False)
+                self._render()
         elif kind == "stopped":
             self.status.stopped()
             if not self._closing:
@@ -1870,20 +2090,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         if sys.stderr is not None:  # None in the windowed build
             print(f"wahoo-server: cannot open a window: {e}", file=sys.stderr)
         return 2
+    lock = acquire_lock(home / LOCK_FILE)  # held until the process exits
     host, port = service_address(home)
-    if already_running(host, port):
+    problem = None
+    if lock is None:
+        problem = "Wahoo Server is already running."
+    elif already_running(host, port):
+        problem = f"Another program is using {host}:{port} (the FTMS port in {FTMS_CONFIG})."
+    if problem is not None:
         root.withdraw()
-        messagebox.showerror("Wahoo Server",
-                             f"Wahoo Server is already running (or another program is using {host}:{port}).")
+        messagebox.showerror("Wahoo Server", problem)
         root.destroy()
         return 1
     attach_hidden_console()
     events: queue.Queue = queue.Queue()
     sink = LineSink(events.put, home / LOG_DIR / f"server_{time.strftime('%Y%m%d_%H%M%S')}.log")
 
-    def make_supervisor(cfg: FtmsConfig) -> ServerSupervisor:
+    def make_supervisor(cfg: FtmsConfig, ftms_enabled: bool) -> ServerSupervisor:
         return ServerSupervisor(service_commands(args.debug), connect_host(cfg.ftms.host), cfg.ftms.port,
-                                sink, events.put, timings_for(cfg))
+                                sink, events.put, timings_for(cfg), ftms_enabled=ftms_enabled)
 
     window = ServerWindow(root, events, home, make_supervisor,
                           lambda source_id: LslFollower(events.put, source_id=source_id))
@@ -1896,6 +2121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         root.mainloop()
     finally:
         sink.close()
+        lock.close()
     return 0
 
 
@@ -2179,11 +2405,11 @@ if __name__ == "__main__":
 2. **Building the installer:** on Windows with Python 3.12 + Inno Setup 6, run `powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1`; output in `build\installer\`.
 3. **Installing:** run the installer as an administrator; SmartScreen ("More info → Run anyway", because it's unsigned); what goes where (`Program Files\Wahoo LSL`, `%ProgramData%\wahoo-lsl\config.json`, `ftms.json`, `logs\`); upgrades keep the configs; uninstall keeps configs and logs.
 4. **First-run configuration:** edit `device` (`name` / `mac`) in **both** config files (same values), then **Restart services**. Use `"C:\Program Files\Wahoo LSL\wahoo-worker.exe" lsl scan` and `lsl list-features -c "%ProgramData%\wahoo-lsl\config.json"` to find the trainer.
-5. **The server window:** each row and its values; the buttons; closing (the confirmation when a client is connected; a second close skips the waits); config errors; the "already running" message; that only one FTMS client (dashboard, script or MATLAB) can control the trainer at a time.
+5. **The server window:** each row and its values; the **FTMS control** checkbox (on at every launch; untick it to let another app or device such as a training app control the trainer while logging and LSL continue; tick it again once that app has disconnected; it unticks itself if the FTMS service stops); the buttons; closing (the confirmation when a client is connected; a second close skips the waits); config errors; the "already running" message; that only one FTMS client (dashboard, script or MATLAB) can control the trainer at a time.
 6. **The dashboard:** uses the server's `ftms.json` host/port; follows the first CPS LSL stream (the status bar names it); `--stream <source_id>` to choose one.
 7. **Logs:** `server_<time>.log` (both services' output) and `cps_<time>.jsonl` (data).
 8. **Firewall and LSL:** the private-network rule for `wahoo-worker.exe`.
-9. **Manual test checklist (Windows):** the 9 steps from the spec's Testing section, verbatim.
+9. **Manual test checklist (Windows):** the 11 steps from the spec's Testing section, verbatim.
 10. **Developing on macOS/Linux:** `wahoo-server` and `wahoo-dashboard-app` run unpackaged, using `WAHOO_LSL_HOME` or the current folder.
 
 - [ ] **Step 4: Generate icons and run the tests**
