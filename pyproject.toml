@@ -10,11 +10,14 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+windows = ["pyinstaller>=6"]
 
 [project.scripts]
 wahoo-lsl = "wahoo_lsl.cli:main"
 wahoo-ftms = "wahoo_lsl.ftms.cli:main"
 wahoo-dashboard = "wahoo_lsl.dashboard.launcher:main"
+wahoo-server = "wahoo_lsl.apps.server_app:main"
+wahoo-dashboard-app = "wahoo_lsl.apps.dashboard_app:main"
 
 [build-system]
 requires = ["setuptools>=64"]
