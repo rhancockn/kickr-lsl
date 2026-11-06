@@ -280,7 +280,7 @@ fed the counter fields from the LSL stream.
 
 ### Build (`build.ps1`)
 
-Requires Windows, Python 3.12 and Inno Setup 6 (`iscc` on PATH, or the default install path):
+Requires Windows, Python 3.12 and Inno Setup 7 or 6.3+ (`iscc` on PATH, or under Program Files / Program Files (x86)):
 
 1. Create a clean venv in `build\venv`.
 2. `pip install .[windows]`.

@@ -2,6 +2,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#if AppVersion == ""
+  #error AppVersion is empty: build with build.ps1 or pass /DAppVersion=<version>
+#endif
 
 [Setup]
 AppId={{072F395A-88CF-400F-935E-D3EE050E6F75}

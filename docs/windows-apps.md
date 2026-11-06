@@ -13,7 +13,7 @@ No Python installation is needed on the lab machine.
 
 ## Building the installer
 
-On Windows with Python 3.12 (the `py` launcher) and Inno Setup 6 installed, from the repository root:
+On Windows with Python 3.12 (the `py` launcher) and Inno Setup 7 (or 6.3+) installed, from the repository root:
 
 ```
 powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1
