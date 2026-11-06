@@ -122,3 +122,48 @@ def test_invalid_slew_settings(ftms, message):
 def test_example_config_has_slew_keys():
     cfg = load_ftms_config(Path(__file__).resolve().parents[1] / "ftms.example.json")
     assert (cfg.ftms.slew_w_per_s, cfg.ftms.slew_update_interval_s) == (10.0, 10.0)
+
+
+def test_allowed_hosts_default_local_only():
+    s = cfg().ftms
+    assert s.allowed_hosts == ()
+    assert not s.remote
+    assert s.bind_host == "127.0.0.1"
+
+
+def test_allowed_hosts_parsed():
+    s = cfg(allowed_hosts=["Lab-PC-3.lab.local", "10.0.0.23"]).ftms
+    assert s.allowed_hosts == ("lab-pc-3.lab.local", "10.0.0.23")
+    assert s.remote
+    assert s.bind_host == "0.0.0.0"
+
+
+@pytest.mark.parametrize("value", ["lab-pc", [""], ["a b"], [1], None])
+def test_allowed_hosts_rejects_bad(value):
+    with pytest.raises(ConfigError, match="ftms.allowed_hosts"):
+        cfg(allowed_hosts=value)
+
+
+def test_listen_host_custom():
+    assert cfg(allowed_hosts=["x"], listen_host="192.168.1.5").ftms.bind_host == "192.168.1.5"
+
+
+@pytest.mark.parametrize("value", ["lab-pc", "::", "fe80::1", 5])
+def test_listen_host_rejects_bad(value):
+    with pytest.raises(ConfigError, match="ftms.listen_host"):
+        cfg(allowed_hosts=["x"], listen_host=value)
+
+
+def test_listen_host_needs_allowed_hosts():
+    with pytest.raises(ConfigError, match="listen_host needs allowed_hosts"):
+        cfg(listen_host="0.0.0.0")
+
+
+@pytest.mark.parametrize("host", ["localhost", "::1"])
+def test_allowed_hosts_requires_ipv4_loopback_host(host):
+    with pytest.raises(ConfigError, match="with allowed_hosts, ftms.host must be 127.0.0.1"):
+        cfg(allowed_hosts=["x"], host=host)
+
+
+def test_example_config_parses():
+    assert load_ftms_config(ROOT / "ftms.example.json").ftms.allowed_hosts == ()

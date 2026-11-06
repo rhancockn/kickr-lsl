@@ -1,6 +1,7 @@
 """FTMS controller config (spec §6). A separate file from the logger config."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from .slew import MAX_SLEW_W_PER_S
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _TOP_KEYS = {"device", "reconnect", "ftms"}
-_FTMS_KEYS = {"host", "port", "max_rate_hz", "ack_timeout_s", "max_watts", "slew_w_per_s", "slew_update_interval_s"}
+_FTMS_KEYS = {"host", "port", "allowed_hosts", "listen_host", "max_rate_hz", "ack_timeout_s", "max_watts", "slew_w_per_s", "slew_update_interval_s"}
 
 
 @dataclass(frozen=True)
@@ -33,6 +34,16 @@ class FtmsSettings:
     max_watts: int | None = None
     slew_w_per_s: float = 10.0  # increases ramp at this rate; decreases and 0 = sent directly
     slew_update_interval_s: float = 10.0
+    allowed_hosts: tuple[str, ...] = ()
+    listen_host: str = "0.0.0.0"
+
+    @property
+    def remote(self) -> bool:
+        return bool(self.allowed_hosts)
+
+    @property
+    def bind_host(self) -> str:
+        return self.listen_host if self.remote else self.host
 
 
 @dataclass(frozen=True)
@@ -93,6 +104,14 @@ def _parse_ftms(d: dict) -> FtmsSettings:
     interval = pos_number(d.get("slew_update_interval_s", 10.0), "ftms.slew_update_interval_s")
     if not math.isfinite(interval):
         raise ConfigError(f"ftms.slew_update_interval_s must be a finite positive number, got {interval!r}")
+    allowed_hosts = _parse_allowed_hosts(d.get("allowed_hosts", []))
+    if "listen_host" in d and not allowed_hosts:
+        raise ConfigError("ftms.listen_host needs allowed_hosts")
+    listen_host = d.get("listen_host", "0.0.0.0")
+    if not _is_ipv4(listen_host):
+        raise ConfigError(f"ftms.listen_host must be an IPv4 address, got {listen_host!r}")
+    if allowed_hosts and host != "127.0.0.1":
+        raise ConfigError(f"with allowed_hosts, ftms.host must be 127.0.0.1, got {host!r}")
     return FtmsSettings(
         host=host,
         port=port,
@@ -101,4 +120,21 @@ def _parse_ftms(d: dict) -> FtmsSettings:
         max_watts=max_watts,
         slew_w_per_s=float(slew),
         slew_update_interval_s=interval,
+        allowed_hosts=allowed_hosts,
+        listen_host=listen_host,
     )
+
+
+def _is_ipv4(value: Any) -> bool:
+    try:
+        return isinstance(value, str) and ipaddress.IPv4Address(value) is not None
+    except ValueError:
+        return False
+
+
+def _parse_allowed_hosts(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(
+        isinstance(h, str) and h.strip() and not any(c.isspace() for c in h.strip()) for h in value
+    ):
+        raise ConfigError(f"ftms.allowed_hosts must be a list of non-empty strings without whitespace, got {value!r}")
+    return tuple(h.strip().lower() for h in value)

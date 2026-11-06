@@ -13,6 +13,7 @@
   "ftms": {
     "host": "127.0.0.1",
     "port": 47610,
+    "allowed_hosts": [],
     "max_rate_hz": 2,
     "ack_timeout_s": 1.0,
     "max_watts": null,
