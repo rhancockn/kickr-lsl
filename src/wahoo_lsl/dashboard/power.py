@@ -97,6 +97,9 @@ class PowerWorker:
             self._post(("service_error", f"{e.code}: {e.detail}"))
             self._down(f"service refused the connection ({e.code})")
             return False
+        except Exception as e:  # malformed handshake reply: not a wahoo service; keep retrying
+            self._down(f"connection failed ({_describe(e)})")
+            return False
         with self._lock:
             self._pending = None  # never replay a value chosen while disconnected
             self._slew_dirty = self._slew is not None  # the service reset it on our last disconnect

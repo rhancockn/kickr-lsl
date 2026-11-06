@@ -247,6 +247,34 @@ def test_confirm_zero_unreachable_is_false_and_quick():
     assert time.monotonic() - started < 1.5
 
 
+def test_confirm_zero_retries_after_handshake_connection_error():
+    state = {"n": 0}
+
+    def connect(r):
+        if state["n"] < 2:
+            state["n"] += 1
+            return None  # service drops the connection mid-handshake
+        return connect_reply()
+
+    with StubService(zero_replies(snapshot(requested=0, confirmed=0)), connect) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=3.0, poll_s=0.02) is True
+    assert state["n"] == 2
+
+
+def test_confirm_zero_retries_after_handshake_connection_error():
+    state = {"n": 0}
+
+    def connect(r):
+        if state["n"] < 2:
+            state["n"] += 1
+            return None  # service drops the connection mid-handshake
+        return connect_reply()
+
+    with StubService(zero_replies(snapshot(requested=0, confirmed=0)), connect) as svc:
+        assert confirm_zero("127.0.0.1", svc.port, timeout_s=3.0, poll_s=0.02) is True
+    assert state["n"] == 2
+
+
 def test_confirm_zero_retries_while_busy():
     state = {"n": 0}
     busy = {"ok": False, "error": "busy", "detail": "another client is connected"}

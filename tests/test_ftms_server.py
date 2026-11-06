@@ -397,6 +397,76 @@ def test_disconnect_spins_down_once_replies_and_closes():
     assert ctl.spin_downs == ["client disconnect"]
 
 
+def test_connect_during_disconnect_spin_down_is_busy_and_not_zeroed():
+    ctl = StubController()
+    gate = asyncio.Event()
+
+    async def slow_spin_down(reason):
+        ctl.calls.append("spin_down")
+        await gate.wait()
+        ctl.requests.append(0)  # stands in for zeroing the target at the end of the old spin-down
+        return True
+
+    ctl.spin_down = slow_spin_down
+
+    async def scenario():
+        server = await serving(ctl)
+        r1, w1 = await asyncio.open_connection("127.0.0.1", server.port)
+        w1.write(b'{"cmd":"disconnect"}\n')
+        await w1.drain()
+        await until(lambda: "spin_down" in ctl.calls)
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = await ask(r2, w2, {"cmd": "set", "watts": 100})
+        assert reply["ok"] is False and reply["error"] == "busy"
+        assert ctl.requests == []  # the busy client never reached the controller
+        gate.set()
+        assert json.loads(await r1.readline()) == {"ok": True, "spun_down": True}
+        await until(lambda: server._active is None)
+        r3, w3 = await asyncio.open_connection("127.0.0.1", server.port)
+        assert (await ask(r3, w3, {"cmd": "set", "watts": 100}))["ok"]
+        w3.close()
+        await until(lambda: server._active is None)
+        await server.close()
+
+    run(scenario)
+    assert ctl.requests[:2] == [0, 100]  # old spin-down finished first; w3's EOF spin-down adds a 0
+
+
+def test_connect_during_disconnect_spin_down_is_busy_and_not_zeroed():
+    ctl = StubController()
+    gate = asyncio.Event()
+
+    async def slow_spin_down(reason):
+        ctl.calls.append("spin_down")
+        await gate.wait()
+        ctl.requests.append(0)  # stands in for zeroing the target at the end of the old spin-down
+        return True
+
+    ctl.spin_down = slow_spin_down
+
+    async def scenario():
+        server = await serving(ctl)
+        r1, w1 = await asyncio.open_connection("127.0.0.1", server.port)
+        w1.write(b'{"cmd":"disconnect"}\n')
+        await w1.drain()
+        await until(lambda: "spin_down" in ctl.calls)
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = await ask(r2, w2, {"cmd": "set", "watts": 100})
+        assert reply["ok"] is False and reply["error"] == "busy"
+        assert ctl.requests == []  # the busy client never reached the controller
+        gate.set()
+        assert json.loads(await r1.readline()) == {"ok": True, "spun_down": True}
+        await until(lambda: server._active is None)
+        r3, w3 = await asyncio.open_connection("127.0.0.1", server.port)
+        assert (await ask(r3, w3, {"cmd": "set", "watts": 100}))["ok"]
+        w3.close()
+        await until(lambda: server._active is None)
+        await server.close()
+
+    run(scenario)
+    assert ctl.requests[:2] == [0, 100]  # old spin-down finished first; w3's EOF spin-down adds a 0
+
+
 def test_disconnect_reports_spin_down_failure_and_closes():
     ctl = StubController()
     ctl.spin_down_result = False

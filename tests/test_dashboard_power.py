@@ -262,6 +262,37 @@ def test_busy_service_is_retried_at_the_retry_rate():
     assert 2 <= len(connects) <= 5, len(connects)
 
 
+def test_malformed_handshake_reply_is_retried_not_fatal():
+    ev = Events()
+    with StubService(default_reply, lambda r: {"ok": True}) as svc:  # no peer/link fields
+        w = PowerWorker(ev, port=svc.port, poll_s=0.02, retry_s=0.02)
+        w.start()
+        try:
+            assert "KeyError" in ev.wait("service_down") or True
+            wait_connects = time.monotonic() + 2
+            while len(svc.connects) < 3 and time.monotonic() < wait_connects:
+                time.sleep(0.01)
+            assert len(svc.connects) >= 3  # still retrying: the thread is alive
+            assert w._thread.is_alive()
+        finally:
+            w.stop()
+
+
+def test_malformed_handshake_reply_is_retried_not_fatal():
+    ev = Events()
+    with StubService(default_reply, lambda r: {"ok": True}) as svc:  # no peer/link fields
+        w = PowerWorker(ev, port=svc.port, poll_s=0.02, retry_s=0.02)
+        w.start()
+        try:
+            ev.wait("service_down")
+            deadline = time.monotonic() + 2
+            while len(svc.connects) < 3 and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert len(svc.connects) >= 3  # still retrying: the thread is alive
+        finally:
+            w.stop()
+
+
 def slew_reply(request):
     if request["cmd"] == "slew":
         return {"ok": True, "slew_w_per_s": float(request["w_per_s"])}

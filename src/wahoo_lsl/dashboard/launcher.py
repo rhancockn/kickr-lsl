@@ -77,11 +77,11 @@ def confirm_zero(host: str, port: int, timeout_s: float = 3.0, poll_s: float = 0
                 return False
             try:
                 client = KickrClient(host, port, min(1.0, remaining))
-            except OSError as e:
+            except ConnectionRefusedError as e:
                 say(f"service unreachable ({e}); cannot confirm 0 W")
                 return False
-            except KickrError as e:
-                if e.code != "busy":
+            except (KickrError, OSError) as e:  # busy, or dropped mid-handshake: retry within the deadline
+                if isinstance(e, KickrError) and e.code != "busy":
                     raise
                 time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))  # dashboard still releasing
                 continue

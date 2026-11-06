@@ -131,8 +131,7 @@ class ControlServer:
                     break  # EOF
                 if not line.strip():
                     continue
-                reply = await self._dispatch(line, writer)
-                spun_down = reply.get("spun_down") is not None
+                reply, spun_down = await self._dispatch(line, writer)
                 await _send(writer, reply)
                 if spun_down:
                     break
@@ -159,7 +158,16 @@ class ControlServer:
             self._refusal_warned[ip] = now
         log.log(logging.DEBUG if quiet else logging.WARNING, "Refusing %s: not in allowed_hosts", ip or "unknown peer")
 
-    async def _dispatch(self, line: bytes, writer: asyncio.StreamWriter) -> dict[str, Any]:
+    async def _dispatch(self, line: bytes, writer: asyncio.StreamWriter) -> tuple[dict[str, Any], bool]:
+        """The reply, and whether this was a disconnect (spun down: the connection ends)."""
+        reply = self._dispatch_sync(line, writer)
+        if reply is not None:
+            return reply, False
+        self._controller.reset_slew()
+        return {"ok": True, "spun_down": await self._controller.spin_down("client disconnect")}, True
+
+    def _dispatch_sync(self, line: bytes, writer: asyncio.StreamWriter) -> dict[str, Any] | None:
+        """Every command except disconnect (returns None: it needs awaits)."""
         try:
             request = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -173,8 +181,7 @@ class ControlServer:
             snap = self._controller.snapshot()
             return {"ok": True, "peer": peer_ip(writer), "link": snap["link"], "link_epoch": snap["link_epoch"]}
         if cmd == "disconnect":
-            self._controller.reset_slew()
-            return {"ok": True, "spun_down": await self._controller.spin_down("client disconnect")}
+            return None
         if cmd == "set":
             watts = request.get("watts")
             if not isinstance(watts, int) or isinstance(watts, bool) or watts < 0:
