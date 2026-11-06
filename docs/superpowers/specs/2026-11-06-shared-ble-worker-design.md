@@ -69,7 +69,8 @@ its `connect()` succeeded.
 - **Unexpected drop:** the real client's disconnected callback fires while the link is
   up. Mark the link down, bump the epoch, then call each attached handle's
   `disconnected_callback(handle)`, each in its own try. Handles of the old epoch are now
-  stale.
+  stale. The dead real client is then released with a bounded `disconnect()` (about 5 s,
+  errors ignored); the next real connect, and any detach, waits for that release first.
 - **Stale or unattached handles:** `is_connected` is False. GATT calls raise
   `BleakError("shared link: not connected")`, which falls within `ble.COMMS_ERRORS`, so the
   existing error paths apply.
@@ -212,7 +213,7 @@ window, `ServerStatus` and the dashboard app are unchanged.
 
 | Situation | Result |
 |---|---|
-| Configs select different devices | The second service fails setup with the "only one device is supported" error; FTMS → unticked, CPS → session ends |
+| Configs select different devices | The second service fails setup with "no device … found" (no scan is run), and the worker logs the warning "only one device is supported; already connected to <label>"; FTMS → unticked, CPS → session ends |
 | Worker crashes | Session ends with "CPS logger exited with code N" |
 | Server dies | stdin EOF → the worker stops FTMS (0 W), then CPS, then exits |
 | `ftms off` hangs | Bounded by `controller.close`; the supervisor still posts "off" after `grace_s` |
