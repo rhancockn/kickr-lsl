@@ -119,6 +119,7 @@ class ControlServer:
             return
         self._active = writer
         log.info("Client connected: %s", peer)
+        spun_down = False  # set by an explicit disconnect so the finally path does not repeat it
         try:
             while True:
                 try:
@@ -130,7 +131,11 @@ class ControlServer:
                     break  # EOF
                 if not line.strip():
                     continue
-                await _send(writer, self._dispatch(line))
+                reply = await self._dispatch(line, writer)
+                spun_down = reply.get("spun_down") is not None
+                await _send(writer, reply)
+                if spun_down:
+                    break
         except ConnectionError as e:
             log.info("Client %s connection error: %s", peer, e)
         except Exception:
@@ -141,7 +146,7 @@ class ControlServer:
             log.info("Client disconnected: %s", peer)
             # Spin down before awaiting wait_closed: Controller.spin_down zeroes requested_w
             # before its first await, so a reconnecting client's later set always wins.
-            if not self._closing:
+            if not self._closing and not spun_down:
                 self._controller.reset_slew()  # the rate belongs to the client that set it
                 await self._controller.spin_down("client disconnected")
             with suppress(ConnectionError):
@@ -154,7 +159,7 @@ class ControlServer:
             self._refusal_warned[ip] = now
         log.log(logging.DEBUG if quiet else logging.WARNING, "Refusing %s: not in allowed_hosts", ip or "unknown peer")
 
-    def _dispatch(self, line: bytes) -> dict[str, Any]:
+    async def _dispatch(self, line: bytes, writer: asyncio.StreamWriter) -> dict[str, Any]:
         try:
             request = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -164,6 +169,12 @@ class ControlServer:
         cmd = request.get("cmd")
         if cmd == "read":
             return {"ok": True, **self._controller.snapshot()}
+        if cmd == "connect":
+            snap = self._controller.snapshot()
+            return {"ok": True, "peer": peer_ip(writer), "link": snap["link"], "link_epoch": snap["link_epoch"]}
+        if cmd == "disconnect":
+            self._controller.reset_slew()
+            return {"ok": True, "spun_down": await self._controller.spin_down("client disconnect")}
         if cmd == "set":
             watts = request.get("watts")
             if not isinstance(watts, int) or isinstance(watts, bool) or watts < 0:
@@ -184,7 +195,7 @@ class ControlServer:
                     "invalid_slew", f"w_per_s must be a number 0..{MAX_SLEW_W_PER_S:g}, got {rate!r}"
                 )
             return {"ok": True, "slew_w_per_s": self._controller.set_slew_rate(rate)}
-        return error_reply("bad_request", f"unknown cmd {cmd!r}; expected 'set', 'slew' or 'read'")
+        return error_reply("bad_request", f"unknown cmd {cmd!r}; expected 'set', 'slew', 'read', 'connect' or 'disconnect'")
 
 
 async def _send(writer: asyncio.StreamWriter, obj: dict[str, Any]) -> None:

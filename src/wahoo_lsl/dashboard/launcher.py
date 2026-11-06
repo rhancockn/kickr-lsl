@@ -80,6 +80,11 @@ def confirm_zero(host: str, port: int, timeout_s: float = 3.0, poll_s: float = 0
             except OSError as e:
                 say(f"service unreachable ({e}); cannot confirm 0 W")
                 return False
+            except KickrError as e:
+                if e.code != "busy":
+                    raise
+                time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))  # dashboard still releasing
+                continue
             try:
                 _disable_slew(client)
                 client.set_target_power(0)

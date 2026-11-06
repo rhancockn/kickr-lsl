@@ -172,12 +172,14 @@ From Python (standard library only; no bleak/pylsl needed in the client's enviro
 ```python
 from wahoo_lsl.ftms.client import KickrClient
 
-with KickrClient() as kickr:            # 127.0.0.1:47610
+with KickrClient() as kickr:            # 127.0.0.1:47610; sends connect, raises KickrError if refused
+    print(kickr.peer, kickr.link)       # the address the service sees; BLE link state (also kickr.link_epoch)
     kickr.set_target_power(150)         # returns immediately with the accepted value
     kickr.set_slew_rate(20)             # W/s for this connection; 0 = immediate
     print(kickr.read_target_power())    # TargetState(requested_w, confirmed_w, pending, t_lsl; also setpoint_w, ramp_end_t_lsl)
     print(kickr.read_power())           # PowerReading(watts, t_lsl, age_s)
-# leaving the block disconnects -> service spins down to 0 W
+    kickr.disconnect()                  # optional: spin down to 0 W, wait for it, close; returns True if confirmed
+# leaving the block without disconnect() also spins down to 0 W
 ```
 
 ### Remote clients (allowed hosts)
@@ -208,10 +210,19 @@ Remote PCs use `KickrClient("server-pc.lab.local", 47610)` or a plain socket.
 
 - TCP, UTF-8, one JSON object per line (`\n`), requests and replies alternate. Request lines are
   limited to 4096 bytes. One client at a time; the trainer returns to 0 W when it disconnects.
+- Recommended sequence: open the socket, send `connect`, send commands, then `disconnect`
+  (optional: closing the connection also spins the trainer down).
 - An accepted client receives nothing until it sends a request. If the connection is refused, the
   server sends one error line, `busy` (another client is connected) or `not_allowed` (your address is
   not in `ftms.allowed_hosts`), and closes. It arrives as the reply to your first request, or
   immediately (within about 1.5 s) if you read first; if you read first, use a short timeout.
+- `{"cmd":"connect"}` -> `{"ok":true,"peer":"10.0.0.23","link":"ready","link_epoch":1}`: optional,
+  changes nothing, safe to repeat. `peer` is the address the server sees and checks against
+  `ftms.allowed_hosts`, so use it to confirm which address of this machine is being used. A refused
+  client gets `busy` or `not_allowed` as the reply instead.
+- `{"cmd":"disconnect"}` -> `{"ok":true,"spun_down":true}`, then the server closes the connection.
+  It sets the trainer to 0 W (waiting up to 2 s for the trainer) and resets your slew rate;
+  `spun_down` is false if the trainer did not confirm 0 W (for example the link is down).
 - `{"cmd":"set","watts":150}` -> `{"ok":true,"target_w":150,"clamped":false}` (non-negative integer;
   clamped to `max_watts`; returns before the trainer confirms).
 - `{"cmd":"slew","w_per_s":20}` -> `{"ok":true,"slew_w_per_s":20.0}` (0..1000, 0 = immediate; applies to

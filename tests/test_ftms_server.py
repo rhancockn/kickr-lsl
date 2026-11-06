@@ -23,6 +23,7 @@ class StubController:
         self.slews: list[float] = []
         self.calls: list[str] = []
         self.link_down = False
+        self.spin_down_result = True
 
     def request_target(self, watts: int):
         if self.link_down:
@@ -44,7 +45,7 @@ class StubController:
     async def spin_down(self, reason: str) -> bool:
         self.calls.append("spin_down")
         self.spin_downs.append(reason)
-        return True
+        return self.spin_down_result
 
 
 async def until(cond, timeout=2.0):
@@ -340,18 +341,93 @@ def test_disconnect_resets_slew_before_spin_down():
     assert ctl.calls == ["reset_slew", "spin_down"]
 
 
-def test_unknown_command_lists_slew():
+def test_unknown_command_lists_all_commands():
     ctl = StubController()
 
     async def scenario():
         server = await serving(ctl)
         reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
         reply = await ask(reader, writer, {"cmd": "nope"})
-        assert "'slew'" in reply["detail"]
+        assert reply["detail"] == "unknown cmd 'nope'; expected 'set', 'slew', 'read', 'connect' or 'disconnect'"
         writer.close()
         await server.close()
 
     run(scenario)
+
+
+# ---- connect / disconnect ------------------------------------------------------------
+
+
+def test_connect_reports_peer_link_and_changes_nothing(monkeypatch):
+    import wahoo_lsl.ftms.server as srv
+
+    monkeypatch.setattr(srv, "peer_ip", lambda writer: "10.0.0.23")
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        expected = {"ok": True, "peer": "10.0.0.23", "link": "ready", "link_epoch": 1}
+        assert await ask(reader, writer, {"cmd": "connect"}) == expected
+        assert await ask(reader, writer, {"cmd": "connect"}) == expected  # safe to repeat
+        assert ctl.calls == [] and ctl.requests == [] and ctl.slews == []
+        writer.close()
+        await server.close()
+
+    run(scenario)
+
+
+def test_disconnect_spins_down_once_replies_and_closes():
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert await ask(reader, writer, {"cmd": "disconnect"}) == {"ok": True, "spun_down": True}
+        assert await reader.readline() == b""
+        await until(lambda: server._active is None)
+        await asyncio.sleep(0.05)  # a second spin-down from the finally path would land here
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)  # not busy afterwards
+        assert (await ask(r2, w2, {"cmd": "read"}))["ok"]
+        w2.close()
+        await server.close()
+
+    run(scenario)
+    assert ctl.calls == ["reset_slew", "spin_down"]
+    assert ctl.spin_downs == ["client disconnect"]
+
+
+def test_disconnect_reports_spin_down_failure_and_closes():
+    ctl = StubController()
+    ctl.spin_down_result = False
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert await ask(reader, writer, {"cmd": "disconnect"}) == {"ok": True, "spun_down": False}
+        assert await reader.readline() == b""
+        writer.close()
+        await server.close()
+
+    run(scenario)
+    assert ctl.calls == ["reset_slew", "spin_down"]
+
+
+def test_eof_without_disconnect_spins_down_once():
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving(ctl)
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        await ask(reader, writer, {"cmd": "connect"})
+        writer.close()
+        await until(lambda: ctl.spin_downs)
+        await asyncio.sleep(0.05)
+        await server.close()
+
+    run(scenario)
+    assert ctl.calls == ["reset_slew", "spin_down"]
+    assert ctl.spin_downs == ["client disconnected"]
 
 
 # ---- allowed hosts --------------------------------------------------------------------

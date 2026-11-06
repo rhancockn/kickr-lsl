@@ -211,14 +211,13 @@ def test_pending_value_cleared_on_connect():
 
 def test_busy_reply_drops_connection_and_retries():
     ev = Events()
-    with StubService(lambda r: {"ok": False, "error": "busy", "detail": "another client is connected"}) as svc:
+    with StubService(default_reply, lambda r: {"ok": False, "error": "busy", "detail": "another client is connected"}) as svc:
         w = PowerWorker(ev, port=svc.port, poll_s=0.02, retry_s=0.02)
         w.start()
         try:
-            ev.wait("service_connected")
             assert ev.wait("service_error") == "busy: another client is connected"
             assert "busy" in ev.wait("service_down")
-            ev.wait("service_connected")  # retried
+            assert ev.wait("service_error") == "busy: another client is connected"  # retried
         finally:
             w.stop()
 
@@ -248,21 +247,18 @@ def test_stop_while_unreachable_is_prompt():
     assert not w._thread.is_alive()
 
 
-def test_busy_service_is_retried_at_the_retry_rate_even_if_ui_requests_on_connect():
-    connects = []
-
+def test_busy_service_is_retried_at_the_retry_rate():
     def post(item):
-        if item[0] == "service_connected":
-            connects.append(time.monotonic())
-            w.request(0)  # what the UI does on every service_connected
+        pass
 
-    with StubService(lambda r: {"ok": False, "error": "busy", "detail": "another client is connected"}) as svc:
+    with StubService(default_reply, lambda r: {"ok": False, "error": "busy", "detail": "another client is connected"}) as svc:
         w = PowerWorker(post, port=svc.port, poll_s=0.02, retry_s=0.5)
         w.start()
         try:
             time.sleep(1.6)
         finally:
             w.stop()
+        connects = svc.connects
     assert 2 <= len(connects) <= 5, len(connects)
 
 

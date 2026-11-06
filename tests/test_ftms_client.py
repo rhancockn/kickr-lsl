@@ -6,9 +6,9 @@ import sys
 import time
 
 import pytest
-from ftms_stub import StubService, snapshot
+from ftms_stub import StubService, connect_reply, snapshot
 
-from wahoo_lsl.ftms.client import KickrClient, KickrError, PowerReading, SlewState, Status, TargetState
+from wahoo_lsl.ftms.client import ConnectInfo, KickrClient, KickrError, PowerReading, SlewState, Status, TargetState
 
 
 def wait_for(cond, timeout=2.0):
@@ -129,6 +129,8 @@ def test_non_json_reply_breaks_client():
     class H(socketserver.StreamRequestHandler):
         def handle(self):
             self.server.n += 1
+            self.rfile.readline()  # connect
+            self.wfile.write((_json.dumps(connect_reply()) + "\n").encode())
             self.rfile.readline()
             self.wfile.write(b"not json\n")
             self.rfile.readline()
@@ -222,3 +224,66 @@ def test_read_from_older_service_leaves_new_fields_none():
     with StubService(default_reply) as svc, KickrClient(port=svc.port) as client:
         status = client.read()
     assert (status.target.setpoint_w, status.target.ramp_end_t_lsl, status.slew) == (None, None, None)
+
+
+# ---- connect / disconnect -------------------------------------------------------------
+
+
+def test_constructor_sends_connect_and_records_service_view():
+    with StubService(default_reply, lambda r: connect_reply("10.0.0.23", "reconnecting", 4)) as svc:
+        with KickrClient(port=svc.port) as client:
+            assert svc.connects == [{"cmd": "connect"}]
+            assert (client.peer, client.link, client.link_epoch) == ("10.0.0.23", "reconnecting", 4)
+
+
+@pytest.mark.parametrize("code", ["not_allowed", "busy"])
+def test_connect_refusal_raises_and_closes_socket(code):
+    err = {"ok": False, "error": code, "detail": "nope"}
+    with StubService(default_reply, lambda r: err) as svc:
+        with pytest.raises(KickrError) as info:
+            KickrClient(port=svc.port)
+        assert (info.value.code, info.value.detail) == (code, "nope")
+        wait_for(lambda: svc.disconnects == 1)
+
+
+def test_connect_rechecks_and_updates_fields():
+    replies = iter([connect_reply("10.0.0.23", "ready", 1), connect_reply("10.0.0.23", "reconnecting", 2)])
+    with StubService(default_reply, lambda r: next(replies)) as svc, KickrClient(port=svc.port) as client:
+        assert client.connect() == ConnectInfo("10.0.0.23", "reconnecting", 2)
+        assert (client.peer, client.link, client.link_epoch) == ("10.0.0.23", "reconnecting", 2)
+        assert len(svc.connects) == 2
+
+
+def test_disconnect_returns_flag_and_closes():
+    def reply(request):
+        return {"ok": True, "spun_down": False} if request["cmd"] == "disconnect" else default_reply(request)
+
+    with StubService(reply) as svc:
+        with KickrClient(port=svc.port) as client:
+            assert client.disconnect() is False
+            assert svc.requests == [{"cmd": "disconnect"}]
+            wait_for(lambda: svc.disconnects == 1)
+            client.close()  # no-ops after disconnect
+            with pytest.raises(ConnectionError):
+                client.read()
+        assert svc.disconnects == 1
+
+
+def test_disconnect_true_flag():
+    with StubService(lambda r: {"ok": True, "spun_down": True}) as svc, KickrClient(port=svc.port) as client:
+        assert client.disconnect() is True
+
+
+def test_disconnect_waits_longer_than_the_normal_timeout():
+    def slow(request):
+        time.sleep(0.4)  # longer than the 0.2 s request timeout
+        return {"ok": True, "spun_down": True}
+
+    with StubService(slow) as svc, KickrClient(port=svc.port, timeout_s=0.2) as client:
+        assert client.disconnect() is True
+
+
+def test_client_spin_down_timeout_matches_controller():
+    from wahoo_lsl.ftms import client, controller
+
+    assert client.SPIN_DOWN_TIMEOUT_S == controller.SPIN_DOWN_TIMEOUT_S

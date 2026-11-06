@@ -93,6 +93,10 @@ class PowerWorker:
         except OSError as e:
             self._down(f"service unreachable ({_describe(e)})")
             return False
+        except KickrError as e:  # the connect handshake was refused: busy or not_allowed
+            self._post(("service_error", f"{e.code}: {e.detail}"))
+            self._down(f"service refused the connection ({e.code})")
+            return False
         with self._lock:
             self._pending = None  # never replay a value chosen while disconnected
             self._slew_dirty = self._slew is not None  # the service reset it on our last disconnect

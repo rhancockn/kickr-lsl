@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from ftms_stub import StubService, snapshot
+from ftms_stub import StubService, connect_reply, snapshot
 
 from wahoo_lsl.dashboard import launcher
 from wahoo_lsl.dashboard.launcher import (LauncherError, Supervisor, Timings, build_commands, confirm_zero,
@@ -251,13 +251,13 @@ def test_confirm_zero_retries_while_busy():
     state = {"n": 0}
     busy = {"ok": False, "error": "busy", "detail": "another client is connected"}
 
-    def reply(r):
-        if r["cmd"] != "read" and state["n"] < 2:
+    def connect(r):
+        if state["n"] < 2:
             state["n"] += 1
             return busy
-        return zero_replies(snapshot(requested=0, confirmed=0))(r)
+        return connect_reply()
 
-    with StubService(reply) as svc:
+    with StubService(zero_replies(snapshot(requested=0, confirmed=0)), connect) as svc:
         assert confirm_zero("127.0.0.1", svc.port, timeout_s=3.0, poll_s=0.02) is True
 
 

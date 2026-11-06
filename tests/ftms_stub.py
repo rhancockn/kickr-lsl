@@ -25,12 +25,20 @@ def snapshot(requested=0, confirmed=0, pending=False, watts=None, link="ready", 
     return reply
 
 
+def connect_reply(peer="127.0.0.1", link="ready", epoch=1):
+    return {"ok": True, "peer": peer, "link": link, "link_epoch": epoch}
+
+
 class _Handler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         for line in self.rfile:
             request = json.loads(line)
-            self.server.requests.append(request)
-            reply = self.server.reply(request)
+            if request["cmd"] == "connect":  # the client's handshake; kept out of ``requests``
+                self.server.connects.append(request)
+                reply = self.server.connect(request)
+            else:
+                self.server.requests.append(request)
+                reply = self.server.reply(request)
             if reply is None:
                 return  # close the connection without replying
             self.wfile.write((json.dumps(reply) + "\n").encode())
@@ -39,12 +47,18 @@ class _Handler(socketserver.StreamRequestHandler):
 
 
 class StubService:
-    """``reply(request) -> dict | None`` decides each answer (None closes the connection)."""
+    """``reply(request) -> dict | None`` decides each answer (None closes the connection).
 
-    def __init__(self, reply) -> None:
+    ``connect`` requests are answered by ``connect(request)`` (default: ok) and recorded in
+    ``connects``, not ``requests``.
+    """
+
+    def __init__(self, reply, connect=lambda request: connect_reply()) -> None:
         self._server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), _Handler)
         self._server.daemon_threads = True
         self._server.reply = reply
+        self._server.connect = connect
+        self._server.connects = []
         self._server.requests = []
         self._server.disconnects = 0
         self.port = self._server.server_address[1]
@@ -54,6 +68,10 @@ class StubService:
     @property
     def requests(self) -> list:
         return self._server.requests
+
+    @property
+    def connects(self) -> list:
+        return self._server.connects
 
     @property
     def disconnects(self) -> int:

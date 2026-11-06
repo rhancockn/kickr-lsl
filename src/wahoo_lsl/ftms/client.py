@@ -4,7 +4,9 @@ Each call is one localhost round trip (well under a millisecond); BLE latency is
 the service. Use one KickrClient per process (the service accepts a single client); it is
 not thread-safe. Any failure mid-call (timeout, interrupt, malformed reply) closes the client:
 later calls raise ConnectionError without sending. Closing the client (or the process
-exiting) makes the service spin the trainer down to 0 W.
+exiting) makes the service spin the trainer down to 0 W; disconnect() does the same and reports
+whether it was confirmed. The constructor sends `connect`, so a refused client (not_allowed, busy)
+raises KickrError straight away; `peer` is the address the service sees.
 The slew rate set with set_slew_rate also resets to the service default when the client disconnects.
 """
 from __future__ import annotations
@@ -18,6 +20,10 @@ from typing import Any, NamedTuple
 
 from . import DEFAULT_HOST, DEFAULT_PORT
 
+# Copy of controller.SPIN_DOWN_TIMEOUT_S: importing the controller would pull in bleak/pylsl, and this
+# module is standard library only. A test keeps the two equal.
+SPIN_DOWN_TIMEOUT_S = 2.0
+
 
 class KickrError(Exception):
     """The service answered ok:false."""
@@ -26,6 +32,12 @@ class KickrError(Exception):
         super().__init__(f"{code}: {detail}")
         self.code = code
         self.detail = detail
+
+
+class ConnectInfo(NamedTuple):
+    peer: str  # the address the service sees (and checks against ftms.allowed_hosts)
+    link: str
+    link_epoch: int
 
 
 class TargetState(NamedTuple):
@@ -96,6 +108,36 @@ class KickrClient:
             self._sock.close()
             raise
         self._closed = False
+        self._timeout_s = timeout_s
+        self.peer = self.link = ""
+        self.link_epoch = 0
+        try:
+            self.connect()  # refused clients (not_allowed, busy) fail here, not on their first command
+        except BaseException:
+            self.close()
+            raise
+
+    def connect(self) -> ConnectInfo:
+        """Ask the service who it thinks we are and whether the trainer link is up; updates the fields.
+
+        Done once by the constructor; safe to repeat. Changes nothing on the service.
+        """
+        info = self._request({"cmd": "connect"}, lambda r: ConnectInfo(r["peer"], r["link"], r["link_epoch"]))
+        self.peer, self.link, self.link_epoch = info
+        return info
+
+    def disconnect(self) -> bool:
+        """Spin the trainer down to 0 W, wait for it and close; True if the spin-down was confirmed.
+
+        Closing without this also spins down, but cannot report the outcome. After it, close() is a no-op.
+        """
+        if self._closed:
+            raise ConnectionError("client is closed")
+        self._sock.settimeout(max(self._timeout_s, SPIN_DOWN_TIMEOUT_S + 1))
+        try:
+            return self._request({"cmd": "disconnect"}, lambda r: bool(r["spun_down"]))
+        finally:
+            self.close()
 
     def set_target_power(self, watts: float) -> int:
         """Request a target; returns the accepted (rounded, possibly clamped) value immediately.
