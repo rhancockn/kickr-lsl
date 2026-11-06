@@ -79,7 +79,7 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 
 **Closing.** If an FTMS client is connected you are asked to confirm. The server then tells the worker to stop: it spins the trainer down to 0 W, stops the FTMS service, then the CPS logger. A second close while it is waiting skips the waits. Closing during a restart is still an ordered stop.
 
-**Spin-down to 0 W.** The server no longer connects to the FTMS service to check 0 W (that connection was the "client connected, then disconnected" seen in the FTMS log). The FTMS service spins the trainer down in-process when it stops, whether you close the window, untick FTMS control or the server dies, and the log shows the result: `spin-down (...): 0 W confirmed` or a warning. Only a forced kill (for example ending the worker in Task Manager) skips it.
+**Spin-down to 0 W.** The server no longer connects to the FTMS service to check 0 W (that connection was the "client connected, then disconnected" seen in the FTMS log). The FTMS service spins the trainer down in-process when it stops, whether you close the window, untick FTMS control or the server dies, and the log shows the result: `spin-down (...): 0 W confirmed` or a warning. Only a forced kill skips it: ending the worker in Task Manager, or a second close while the server is still waiting (that terminates the worker immediately and can skip the 0 W spin-down).
 
 **One worker, one Bluetooth link.** If the link drops, both services reconnect on their own onto one new connection; the rows show `reconnecting` meanwhile. If one service gives up, FTMS unticks itself and the CPS logger carries on; if the CPS logger gives up, the session ends.
 

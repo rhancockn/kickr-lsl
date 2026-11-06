@@ -133,6 +133,30 @@ def test_ftms_off_that_never_confirms_still_posts_off(tmp_path):
     finish(sup, events)
 
 
+def test_late_exit_after_an_off_timeout_is_not_reported_as_a_failure(tmp_path):
+    t = Timings(port_wait_s=5.0, cps_early_exit_s=0.3, grace_s=0.3, kill_after_s=2.0, poll_s=0.05)
+    o, sup, events, out = running(tmp_path, "--late-ftms-off", 1.0, timings=t)
+    wait_for(lambda: events.of("ftms") == ["on"])
+    sup.set_ftms(False)
+    wait_for(lambda: events.of("ftms") == ["on", "off"])  # posted by the off timeout
+    wait_for(lambda: order(o) == ["ftms-off", "ftms"])  # then the late exit line arrives
+    time.sleep(0.4)
+    assert events.of("ftms") == ["on", "off"] and sup.running
+    finish(sup, events)
+
+
+def test_retick_after_an_off_timeout_ignores_the_late_exit_and_waits_for_ready(tmp_path):
+    t = Timings(port_wait_s=5.0, cps_early_exit_s=0.3, grace_s=0.3, kill_after_s=2.0, poll_s=0.05)
+    o, sup, events, out = running(tmp_path, "--late-ftms-off", 1.0, timings=t)
+    wait_for(lambda: events.of("ftms") == ["on"])
+    sup.set_ftms(False)
+    wait_for(lambda: events.of("ftms") == ["on", "off"])
+    sup.set_ftms(True)
+    wait_for(lambda: events.of("ftms") == ["on", "off", "on"])  # old exit ignored, new ready seen
+    assert sup.running
+    finish(sup, events)
+
+
 def test_worker_exit_during_startup_ends_the_session_with_its_code(tmp_path):
     sup, events, _ = make(worker(tmp_path / "order", "--exit", 3, 0.1))
     sup.start()

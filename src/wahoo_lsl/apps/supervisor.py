@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import IO, Any, Callable
 
-from wahoo_lsl.dashboard.launcher import Timings
+from wahoo_lsl.dashboard.launcher import Timings, _clean_code
 
 from .worker_process import WorkerProcess
 
@@ -106,41 +106,45 @@ class ServerSupervisor:
         # state: "off", "starting" (waiting for the ready line), "on", "stopping" (waiting for the exit line)
         state = "starting" if self._want_ftms else "off"
         deadline = time.monotonic() + self.t.port_wait_s
-        quiet_exit = False  # the next FTMS exit was already reported (start-up timeout)
+        expected_exits = 0  # `ftms off` sent, exit line not seen yet: that line is requested, even if late
         began, announced = time.monotonic(), False
         while not self._stop.is_set():
             code = worker.poll()
             if code is not None:
+                code = _clean_code(code, True)  # a Windows CTRL-exit code is a clean stop
                 return f"{CPS_NAME} exited with code {code}"
             if not announced and time.monotonic() - began >= self.t.cps_early_exit_s:
                 announced = True
                 self.post(("supervisor", "running"))
             while not self._exits.empty():
                 exit_code = self._exits.get()
-                if quiet_exit:
-                    quiet_exit = False
-                elif state == "stopping":
-                    self.post(("ftms", "off"))
-                else:
-                    during = " during start-up" if state == "starting" else ""
-                    self._want_ftms = False
-                    self.post(("ftms", f"stopped ({FTMS_NAME} exited with code {exit_code}{during})"))
+                if expected_exits:
+                    expected_exits -= 1
+                    if state == "stopping":
+                        self.post(("ftms", "off"))
+                        state = "off"
+                    continue  # otherwise it was reported already; a re-tick keeps waiting for the new ready line
+                during = " during start-up" if state == "starting" else ""
+                self._want_ftms = False
+                self.post(("ftms", f"stopped ({FTMS_NAME} exited with code {exit_code}{during})"))
                 state = "off"
             if state == "starting" and self._ready.is_set():
                 state = "on"
                 self.post(("ftms", "on"))
             elif state == "starting" and time.monotonic() >= deadline and self._want_ftms:
-                self._want_ftms, state, quiet_exit = False, "off", True
+                self._want_ftms, state = False, "off"
                 self.post(("ftms", f"stopped ({FTMS_NAME} did not start within {self.t.port_wait_s:g} s)"))
                 worker.send("ftms off")
+                expected_exits += 1
             elif state in ("starting", "on") and not self._want_ftms:
                 worker.send("ftms off")
+                expected_exits += 1
                 state, deadline = "stopping", time.monotonic() + self.t.grace_s
             elif state == "stopping" and time.monotonic() >= deadline:
                 self._say(f"FTMS did not stop within {self.t.grace_s:g} s")
                 self.post(("ftms", "off"))
                 state = "off"
-            elif state == "off" and self._want_ftms and not quiet_exit:
+            elif state == "off" and self._want_ftms:
                 self._ready.clear()
                 worker.send("ftms on")
                 state, deadline = "starting", time.monotonic() + self.t.port_wait_s

@@ -4,7 +4,8 @@ Obeys the stdin protocol (`ftms on`, `ftms off`, `stop`; EOF = stop) and prints 
 the supervisor parses. Each action appends a word to ORDER_FILE: ftms-on, ftms-off, ftms, cps.
 Switches: --no-ftms, --no-ready (FTMS never logs its ready line), --ftms-dies CODE DELAY_S
 (FTMS exits unprompted), --exit CODE DELAY_S (worker exits), --ignore-stop (stop and EOF do nothing),
---ignore-ftms-off (`ftms off` is ignored).
+--ignore-ftms-off (`ftms off` is ignored),
+--late-ftms-off DELAY_S (`ftms off` takes that long to exit; an `ftms on` meanwhile restarts FTMS after it).
 """
 import sys
 import threading
@@ -19,6 +20,8 @@ def value(flag, n):
     return args[args.index(flag) + 1:][:n] if flag in args else None
 
 
+late_off = value("--late-ftms-off", 1)
+pending_off, restart = False, False
 ftms_dies, exit_after = value("--ftms-dies", 2), value("--exit", 2)
 lock = threading.Lock()
 ftms_on, ftms_since, done = False, 0.0, threading.Event()
@@ -57,13 +60,33 @@ def finish():
     done.set()
 
 
+def late_exit():
+    global pending_off, restart
+    time.sleep(float(late_off[0]))
+    with lock:
+        if ftms_on and pending_off:
+            pending_off = False
+            ftms_exit(0)
+            if restart:
+                restart = False
+                note("ftms-on")
+                ftms_start()
+
+
 def read_stdin():
+    global pending_off, restart
     for line in sys.stdin:
         cmd = line.strip()
         with lock:
-            if cmd == "ftms on" and not ftms_on:
+            if cmd == "ftms on" and pending_off:
+                restart = True
+            elif cmd == "ftms on" and not ftms_on:
                 note("ftms-on")
                 ftms_start()
+            elif cmd == "ftms off" and ftms_on and late_off:
+                note("ftms-off")
+                pending_off = True
+                threading.Thread(target=late_exit, daemon=True).start()
             elif cmd == "ftms off" and ftms_on and not ignore_off:
                 note("ftms-off")
                 ftms_exit(0)
