@@ -4,6 +4,9 @@ $ErrorActionPreference = "Stop"
 Set-Location (Resolve-Path "$PSScriptRoot\..\..")
 
 function Run($exe) {
+    # Windows PowerShell 5.1 turns any stderr output into a terminating error under "Stop";
+    # judge success by the exit code only.
+    $ErrorActionPreference = "Continue"
     & $exe @args
     if ($LASTEXITCODE -ne 0) { throw "$exe $args failed with exit code $LASTEXITCODE" }
 }
