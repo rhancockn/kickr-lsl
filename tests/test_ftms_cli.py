@@ -395,3 +395,44 @@ def test_serve_warns_unresolvable_name(monkeypatch, caplog):
         assert asyncio.run(scenario()) == 0
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert any("allowed host 'no-such-host.invalid' does not resolve" in r.getMessage() for r in warnings)
+
+
+def test_serve_port_in_use_not_delayed_by_slow_resolver(monkeypatch):
+    async def hang(name):
+        await asyncio.sleep(30)
+        return []
+
+    monkeypatch.setattr("wahoo_lsl.ftms.allow.resolve_host", hang)
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        port = s.getsockname()[1]
+
+        async def scenario():
+            t0 = asyncio.get_running_loop().time()
+            code = await asyncio.wait_for(_serve(_remote_cfg(port, ["slow.invalid"]), FakeFtmsBackend()), 5.0)
+            return code, asyncio.get_running_loop().time() - t0
+
+        code, elapsed = asyncio.run(scenario())
+    assert code == 2 and elapsed < 1.0
+
+
+def test_serve_slow_resolver_bounded_and_warns_timed_out(monkeypatch, caplog):
+    async def hang(name):
+        await asyncio.sleep(30)
+        return []
+
+    monkeypatch.setattr("wahoo_lsl.ftms.allow.resolve_host", hang)
+    port = free_port()
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(_serve(_remote_cfg(port, ["a.invalid", "b.invalid"]), FakeFtmsBackend(), stop))
+        await _wait(lambda: "Accepting client commands" in caplog.text, timeout=4.0)
+        stop.set()
+        return await asyncio.wait_for(task, 5.0)
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(scenario()) == 0
+    assert "allowed host 'a.invalid' does not resolve (timed out)" in caplog.text
+    assert "allowed host 'b.invalid' does not resolve (timed out)" in caplog.text

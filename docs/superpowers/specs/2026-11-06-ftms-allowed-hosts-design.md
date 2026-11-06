@@ -97,11 +97,11 @@ on Windows and Linux. Keeping `host` loopback therefore leaves every local diall
   if any resolved address equals the peer.
   - The production resolver is `loop.getaddrinfo(name, None)`, taking A and AAAA records with
     the same normalisation.
-  - The whole check is bounded at **2 s** in total.
+  - The whole check is bounded at **1.5 s** in total (kept below `KickrClient`'s default 2 s read timeout, so a refused client still receives `not_allowed`).
   - A name that fails or times out simply doesn't match, logged at DEBUG; other entries still
     count.
-- Names are resolved **on every connection**, with no cache, so a DHCP address change is
-  picked up immediately. Connections are rare, so this is cheap.
+- Lookups are single-flight per name with a 2 s result cache, so a DHCP address change is picked
+  up within seconds and a flood of connections cannot exhaust the resolver thread pool.
 - The resolver is injected so tests need no network.
 
 ### Server (`src/wahoo_lsl/ftms/server.py`)
@@ -165,7 +165,7 @@ on Windows and Linux. Keeping `host` loopback therefore leaves every local diall
   - a name resolving to the peer;
   - a name resolving elsewhere;
   - one name failing while another matches;
-  - a slow resolver hitting the 2 s bound (use a short injected bound in tests);
+  - a slow resolver hitting the 1.5 s bound (use a short injected bound in tests);
   - an IPv4-mapped peer;
   - loopback always allowed;
   - case-insensitive names.

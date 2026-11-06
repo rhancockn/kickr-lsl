@@ -137,4 +137,7 @@ def _parse_allowed_hosts(value: Any) -> tuple[str, ...]:
         isinstance(h, str) and h.strip() and not any(c.isspace() for c in h.strip()) for h in value
     ):
         raise ConfigError(f"ftms.allowed_hosts must be a list of non-empty strings without whitespace, got {value!r}")
+    for h in value:
+        if "/" in h:
+            raise ConfigError(f"ftms.allowed_hosts entries must be a DNS name or IP address (no ranges), got {h!r}")
     return tuple(h.strip().lower() for h in value)

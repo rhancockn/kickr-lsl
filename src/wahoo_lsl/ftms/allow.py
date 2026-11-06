@@ -9,7 +9,9 @@ from collections.abc import Awaitable, Callable, Sequence
 
 log = logging.getLogger(__name__)
 
-CHECK_TIMEOUT_S = 2.0
+# Below KickrClient's default 2 s read timeout, so a refused client still receives not_allowed.
+CHECK_TIMEOUT_S = 1.5
+CACHE_TTL_S = 2.0
 
 Resolver = Callable[[str], Awaitable[list[str]]]
 
@@ -32,6 +34,40 @@ async def resolve_host(name: str) -> list[str]:
         return []
     found = (normalize_ip(info[4][0]) for info in infos)
     return list(dict.fromkeys(ip for ip in found if ip))
+
+
+class CachedResolver:
+    """Single-flight resolver with a short result cache.
+
+    At most one lookup per name is in flight (callers share it), and a finished result,
+    including an empty one, is reused for `ttl_s`. This bounds resolver threads to the number
+    of listed names however many connections arrive.
+    """
+
+    def __init__(
+        self, resolve: Resolver = resolve_host, ttl_s: float = CACHE_TTL_S, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._resolve = resolve
+        self._ttl_s = ttl_s
+        self._clock = clock
+        self._tasks: dict[str, asyncio.Future] = {}
+        self._finished: dict[str, float] = {}
+
+    async def __call__(self, name: str) -> list[str]:
+        task = self._tasks.get(name)
+        if task is None or (name in self._finished and self._clock() - self._finished[name] >= self._ttl_s):
+            self._finished.pop(name, None)
+            task = self._tasks[name] = asyncio.ensure_future(self._lookup(name))
+        return await asyncio.shield(task)
+
+    async def _lookup(self, name: str) -> list[str]:
+        try:
+            return await self._resolve(name)
+        except Exception as exc:
+            log.debug("Host lookup for %r failed: %r", name, exc)
+            return []
+        finally:
+            self._finished[name] = self._clock()
 
 
 async def is_allowed(

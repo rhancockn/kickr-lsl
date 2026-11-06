@@ -192,11 +192,15 @@ list them (DNS names or IP literals, case-insensitive) in `ftms.json`:
 With a non-empty `allowed_hosts` the service listens on `ftms.listen_host` (default `"0.0.0.0"`; set
 it to one interface's IPv4 address to limit it) and accepts loopback plus the listed machines; anyone
 else gets `not_allowed` and is closed. `ftms.host` must stay `127.0.0.1` in this mode, and
-`listen_host` needs `allowed_hosts`. Names are re-resolved on every connection (2 s limit). Accepted
+`listen_host` needs `allowed_hosts`. Names are re-resolved as connections arrive (results cached for 2 s, check limited to 1.5 s); ranges such as `10.0.0.0/24` are not supported. Accepted
 risk: the check is by source address only, with no authentication, so anyone who can spoof or share a
 listed address can set trainer power. Local tools must dial `127.0.0.1`: the PC's own LAN address is
 refused unless it is listed. Firewall: Windows installs already open the port on the private profile;
 macOS and Linux may prompt or need a rule for the port.
+
+Manual check: from an unlisted PC, a request should be answered with `not_allowed`; on Windows the
+refused client may instead see a connection reset before it can read that line. On macOS two `serve`
+instances (one local-only, one remote) may both bind (`0.0.0.0` and `127.0.0.1`), so run only one.
 
 Remote PCs use `KickrClient("server-pc.lab.local", 47610)` or a plain socket.
 
@@ -204,9 +208,10 @@ Remote PCs use `KickrClient("server-pc.lab.local", 47610)` or a plain socket.
 
 - TCP, UTF-8, one JSON object per line (`\n`), requests and replies alternate. Request lines are
   limited to 4096 bytes. One client at a time; the trainer returns to 0 W when it disconnects.
-- If the connection is refused the server sends one error line immediately after connect, without
-  waiting for a request, then closes: `busy` (another client is connected) or `not_allowed`
-  (your address is not in `ftms.allowed_hosts`). Read a line before your first request.
+- An accepted client receives nothing until it sends a request. If the connection is refused, the
+  server sends one error line, `busy` (another client is connected) or `not_allowed` (your address is
+  not in `ftms.allowed_hosts`), and closes. It arrives as the reply to your first request, or
+  immediately (within about 1.5 s) if you read first; if you read first, use a short timeout.
 - `{"cmd":"set","watts":150}` -> `{"ok":true,"target_w":150,"clamped":false}` (non-negative integer;
   clamped to `max_watts`; returns before the trainer confirms).
 - `{"cmd":"slew","w_per_s":20}` -> `{"ok":true,"slew_w_per_s":20.0}` (0..1000, 0 = immediate; applies to

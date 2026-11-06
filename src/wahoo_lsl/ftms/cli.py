@@ -180,12 +180,12 @@ async def _serve(cfg: Any, backend: Any = None, stop: asyncio.Event | None = Non
     controller = Controller(cfg, link)
     bind_host = cfg.ftms.bind_host
     server = ControlServer(controller, bind_host, cfg.ftms.port, allowed=cfg.ftms.allowed_hosts)
-    await _warn_unresolvable(cfg.ftms.allowed_hosts)
     try:
         await server.bind()  # before BLE, so "port in use" fails immediately
     except OSError as e:
         log.error("Cannot listen on %s:%d: %s", bind_host, cfg.ftms.port, e)
         return EXIT_CONFIG
+    await _warn_unresolvable(cfg.ftms.allowed_hosts)  # after bind, so "port in use" fails at once
     if stop is None:
         stop = asyncio.Event()
         _install_signal_handlers(stop)
@@ -212,11 +212,18 @@ async def _serve(cfg: Any, backend: Any = None, stop: asyncio.Event | None = Non
 
 
 async def _warn_unresolvable(allowed: Sequence[str]) -> None:
-    """Typo hint only: names are resolved again on every connection."""
-    from .allow import normalize_ip, resolve_host
+    """Typo hint only (names are resolved again on every connection); bounded, never blocks start-up."""
+    from . import allow
 
-    for name in allowed:
-        if normalize_ip(name) is None and not await resolve_host(name):
+    names = [n for n in allowed if allow.normalize_ip(n) is None]
+    tasks = {n: asyncio.ensure_future(allow.resolve_host(n)) for n in names}
+    if tasks:
+        await asyncio.wait(tasks.values(), timeout=allow.CHECK_TIMEOUT_S)
+    for name, task in tasks.items():
+        if not task.done():
+            task.cancel()
+            log.warning("allowed host %r does not resolve (timed out)", name)
+        elif task.cancelled() or task.exception() is not None or not task.result():
             log.warning("allowed host %r does not resolve", name)
 
 

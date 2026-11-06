@@ -167,3 +167,9 @@ def test_allowed_hosts_requires_ipv4_loopback_host(host):
 
 def test_example_config_parses():
     assert load_ftms_config(ROOT / "ftms.example.json").ftms.allowed_hosts == ()
+
+
+@pytest.mark.parametrize("entry", ["10.0.0.0/24", "lab/pc"])
+def test_allowed_hosts_rejects_ranges(entry):
+    with pytest.raises(ConfigError, match="must be a DNS name or IP address"):
+        cfg(allowed_hosts=[entry])

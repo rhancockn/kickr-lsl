@@ -9,11 +9,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Sequence
 from contextlib import suppress
 from typing import Any, Protocol
 
-from .allow import Resolver, is_allowed, resolve_host
+from .allow import CachedResolver, Resolver, is_allowed, resolve_host
 from .controller import LinkDown
 from .slew import MAX_SLEW_W_PER_S
 
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 
 MAX_LINE_BYTES = 4096
 CLOSE_TIMEOUT_S = 5.0
+REFUSAL_WARN_INTERVAL_S = 60.0
 
 
 class ControllerApi(Protocol):
@@ -36,7 +38,8 @@ class ControllerApi(Protocol):
 
 
 def peer_ip(writer: asyncio.StreamWriter) -> str:
-    return writer.get_extra_info("peername")[0]
+    peername = writer.get_extra_info("peername")
+    return peername[0] if peername else ""
 
 
 def error_reply(code: str, detail: str) -> dict[str, Any]:
@@ -55,7 +58,8 @@ class ControlServer:
     ) -> None:
         self._controller = controller
         self._allowed = tuple(allowed)
-        self._resolve = resolve
+        self._resolve = CachedResolver(resolve)
+        self._refusal_warned: dict[str, float] = {}
         self._host = host
         self._port = port
         self._server: asyncio.base_events.Server | None = None
@@ -97,7 +101,7 @@ class ControlServer:
         if self._allowed:
             ip = peer_ip(writer)
             if not await is_allowed(ip, self._allowed, self._resolve):
-                log.warning("Refusing %s: not in allowed_hosts", ip)
+                self._log_refusal(ip)
                 detail = f"this machine ({ip}) is not in ftms.allowed_hosts"
                 with suppress(ConnectionError):
                     await _send(writer, error_reply("not_allowed", detail))
@@ -142,6 +146,13 @@ class ControlServer:
                 await self._controller.spin_down("client disconnected")
             with suppress(ConnectionError):
                 await writer.wait_closed()
+
+    def _log_refusal(self, ip: str) -> None:
+        now = time.monotonic()
+        quiet = now - self._refusal_warned.get(ip, -REFUSAL_WARN_INTERVAL_S) < REFUSAL_WARN_INTERVAL_S
+        if not quiet:
+            self._refusal_warned[ip] = now
+        log.log(logging.DEBUG if quiet else logging.WARNING, "Refusing %s: not in allowed_hosts", ip or "unknown peer")
 
     def _dispatch(self, line: bytes) -> dict[str, Any]:
         try:

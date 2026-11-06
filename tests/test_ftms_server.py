@@ -461,3 +461,32 @@ def test_empty_allowed_skips_check():
         await server.close()
 
     run(scenario)
+
+
+def test_missing_peername_refused_quietly(monkeypatch, caplog):
+    import wahoo_lsl.ftms.server as srv
+
+    class W:
+        def get_extra_info(self, key):
+            return None
+
+    assert srv.peer_ip(W()) == ""
+
+
+def test_refusal_warning_rate_limited(monkeypatch, caplog):
+    import wahoo_lsl.ftms.server as srv
+
+    monkeypatch.setattr(srv, "peer_ip", lambda writer: "10.0.0.99")
+
+    async def scenario():
+        server = await serving_allowed(StubController(), ["lab-pc-3"])
+        for _ in range(2):
+            reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+            await reader.readline()
+            writer.close()
+        await server.close()
+
+    with caplog.at_level("DEBUG", logger="wahoo_lsl.ftms.server"):
+        run(scenario)
+    refusals = [r for r in caplog.records if "Refusing" in r.getMessage()]
+    assert [r.levelname for r in refusals] == ["WARNING", "DEBUG"]
