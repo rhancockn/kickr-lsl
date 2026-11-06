@@ -212,7 +212,7 @@ async def _serve(cfg: Any, backend: Any = None, stop: asyncio.Event | None = Non
 
 
 async def _warn_unresolvable(allowed: Sequence[str]) -> None:
-    """Typo hint only (names are resolved again on every connection); bounded, never blocks start-up."""
+    """Typo hint only (connections re-check names, cached for 2 s); bounded, never blocks start-up."""
     from . import allow
 
     names = [n for n in allowed if allow.normalize_ip(n) is None]
