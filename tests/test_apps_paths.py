@@ -37,13 +37,11 @@ def test_worker_argv_packaged_uses_sibling_exe(monkeypatch, tmp_path):
 
 def test_service_commands(monkeypatch):
     monkeypatch.delattr(sys, "frozen", raising=False)
-    head = [sys.executable, "-m", "wahoo_lsl.apps.worker"]
-    assert paths.service_commands() == {
-        "ftms": [*head, "ftms", "serve", "-c", "ftms.json"],
-        "cps": [*head, "lsl", "run", "-c", "config.json"],
-    }
-    debug = paths.service_commands(debug=True)
-    assert debug["ftms"][-1] == "--debug" and debug["cps"][-1] == "--debug"
+    head = [sys.executable, "-m", "wahoo_lsl.apps.worker", "server", "-c", "config.json", "-f", "ftms.json"]
+    assert paths.service_commands() == {"worker": head}
+    assert paths.service_commands(debug=True) == {"worker": [*head, "--debug"]}
+    assert paths.service_commands(ftms_enabled=False) == {"worker": [*head, "--no-ftms"]}
+    assert paths.service_commands(True, False) == {"worker": [*head, "--no-ftms", "--debug"]}
 
 
 def test_dashboard_argv(monkeypatch, tmp_path):

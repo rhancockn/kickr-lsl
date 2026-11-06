@@ -36,13 +36,10 @@ def worker_argv(kind: str, *args: str) -> list[str]:
     return [sys.executable, "-m", "wahoo_lsl.apps.worker", kind, *args]
 
 
-def service_commands(debug: bool = False) -> dict[str, list[str]]:
-    """The server's children; config paths are relative to data_dir(), the server's working directory."""
-    extra = ["--debug"] if debug else []
-    return {
-        "ftms": worker_argv("ftms", "serve", "-c", FTMS_CONFIG, *extra),
-        "cps": worker_argv("lsl", "run", "-c", CPS_CONFIG, *extra),
-    }
+def service_commands(debug: bool = False, ftms_enabled: bool = True) -> dict[str, list[str]]:
+    """The server's one worker; config paths are relative to data_dir(), the server's working directory."""
+    extra = [*([] if ftms_enabled else ["--no-ftms"]), *(["--debug"] if debug else [])]
+    return {"worker": worker_argv("server", "-c", CPS_CONFIG, "-f", FTMS_CONFIG, *extra)}
 
 
 def dashboard_argv() -> list[str]:

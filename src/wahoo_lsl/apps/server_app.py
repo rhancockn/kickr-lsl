@@ -384,8 +384,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     sink = LineSink(events.put, home / LOG_DIR / f"server_{time.strftime('%Y%m%d_%H%M%S')}.log")
 
     def make_supervisor(cfg: FtmsConfig, ftms_enabled: bool) -> ServerSupervisor:
-        return ServerSupervisor(service_commands(args.debug), connect_host(cfg.ftms.host), cfg.ftms.port,
-                                sink, events.put, timings_for(cfg), ftms_enabled=ftms_enabled)
+        return ServerSupervisor(service_commands(args.debug, ftms_enabled), sink, events.put, timings_for(cfg),
+                                ftms_enabled=ftms_enabled)
 
     window = ServerWindow(root, events, home, make_supervisor,
                           lambda source_id: LslFollower(events.put, source_id=source_id))

@@ -1,22 +1,27 @@
-"""Wahoo Server supervisor: the FTMS service (optional, switchable at runtime) and the CPS logger.
+"""Wahoo Server supervisor: drives the one `wahoo-worker server` process (FTMS service + CPS logger).
 
-Reuses the dashboard launcher's Child (relay, CTRL_BREAK -> terminate -> kill) and confirm_zero.
-One instance runs one session (start ... stop); the window builds a new one to restart.
-The CPS logger is the session: its exit ends it. The FTMS service can stop, fail or be switched
-off and on without touching the CPS logger, so recordings never see a gap.
+The worker shares one BLE connection between both services and takes `ftms on`, `ftms off` and
+`stop` on stdin. One instance runs one session (start ... stop); the window builds a new one to
+restart. The CPS logger is the session: the worker exits with its code. The FTMS service can stop,
+fail or be switched off and on without touching the CPS logger, so recordings never see a gap.
 """
 from __future__ import annotations
 
-import socket
+import queue
+import re
 import threading
 import time
 from pathlib import Path
 from typing import IO, Any, Callable
 
-from wahoo_lsl.dashboard.launcher import Child, Timings, confirm_zero
+from wahoo_lsl.dashboard.launcher import Timings
+
+from .worker_process import WorkerProcess
 
 Post = Callable[[tuple[str, Any]], None]
-NAMES = {"ftms": "FTMS service", "cps": "CPS logger"}
+FTMS_NAME, CPS_NAME = "FTMS service", "CPS logger"
+FTMS_READY = "Accepting client commands on"
+FTMS_EXIT = re.compile(r"^\[worker\].*\bftms exited with code (-?\d+)")
 
 
 class LineSink:
@@ -41,17 +46,16 @@ class LineSink:
 
 
 class ServerSupervisor:
-    def __init__(self, commands: dict[str, list[str]], host: str, port: int, out: IO[str], post: Post,
-                 timings: Timings = Timings(), confirm: Callable[[str, int], object] | None = None,
-                 ftms_enabled: bool = True) -> None:
-        self.commands, self.host, self.port, self.out, self.post, self.t = commands, host, port, out, post, timings
-        self._confirm = confirm
+    def __init__(self, commands: dict[str, list[str]], out: IO[str], post: Post,
+                 timings: Timings = Timings(), ftms_enabled: bool = True) -> None:
+        self.commands, self.out, self.post, self.t = commands, out, post, timings
         self._want_ftms = ftms_enabled  # set by the window; acted on by the supervisor thread
-        self._lock = threading.Lock()  # shared with the Child relays: whole lines only
+        self._lock = threading.Lock()  # shared with the relay thread: whole lines only
         self._stop, self._hurry = threading.Event(), threading.Event()
+        self._ready = threading.Event()  # set by the relay: FTMS logged its ready line
+        self._exits: queue.Queue[int] = queue.Queue()  # set by the relay: codes of ended FTMS tasks
         self._thread: threading.Thread | None = None
-        self._port_ready = False
-        self.children: dict[str, Child] = {}
+        self.worker: WorkerProcess | None = None
 
     @property
     def running(self) -> bool:
@@ -83,109 +87,75 @@ class ServerSupervisor:
         except Exception as e:  # e.g. a worker executable that cannot be started
             reason = f"error: {e}"
         finally:
-            if self.children:
+            if self.worker is not None:
                 self.post(("supervisor", "stopping"))
             try:
                 self._shutdown()
             finally:
                 self.post(("stopped", reason))
 
+    def _on_line(self, line: str) -> None:
+        """Relay thread: only sets thread-safe state for the supervisor thread."""
+        if line.startswith("[ftms]") and FTMS_READY in line:
+            self._ready.set()
+        elif m := FTMS_EXIT.match(line):
+            self._exits.put(int(m.group(1)))
+
     def _start_and_watch(self) -> str:
-        if self._want_ftms:
-            self._start_ftms()
-        if self._stop.is_set():
-            return "stopped"
-        cps = self._start("cps")
-        deadline = time.monotonic() + self.t.cps_early_exit_s  # as in the launcher: let the child settle
-        while time.monotonic() < deadline and not self._stop.is_set():
-            if cps.poll() is not None:
-                return f"{NAMES['cps']} exited with code {cps.poll()}"
-            self._stop.wait(self.t.poll_s)
-        if self._stop.is_set():
-            return "stopped"
-        self.post(("supervisor", "running"))
-        while not self._stop.wait(self.t.poll_s):
-            code = cps.poll()
+        self.worker = worker = WorkerProcess(self.commands["worker"], self.out, self._lock, self._on_line)
+        # state: "off", "starting" (waiting for the ready line), "on", "stopping" (waiting for the exit line)
+        state = "starting" if self._want_ftms else "off"
+        deadline = time.monotonic() + self.t.port_wait_s
+        quiet_exit = False  # the next FTMS exit was already reported (start-up timeout)
+        began, announced = time.monotonic(), False
+        while not self._stop.is_set():
+            code = worker.poll()
             if code is not None:
-                return f"{NAMES['cps']} exited with code {code}"
-            ftms = self.children.get("ftms")
-            if ftms is not None and ftms.poll() is not None:
-                self._ftms_failed(f"{NAMES['ftms']} exited with code {ftms.poll()}")
-            elif ftms is None and self._want_ftms:
-                self._start_ftms()
-            elif ftms is not None and not self._want_ftms:
-                self._confirm_zero(ftms)
-                self._stop_child("ftms")
+                return f"{CPS_NAME} exited with code {code}"
+            if not announced and time.monotonic() - began >= self.t.cps_early_exit_s:
+                announced = True
+                self.post(("supervisor", "running"))
+            while not self._exits.empty():
+                exit_code = self._exits.get()
+                if quiet_exit:
+                    quiet_exit = False
+                elif state == "stopping":
+                    self.post(("ftms", "off"))
+                else:
+                    during = " during start-up" if state == "starting" else ""
+                    self._want_ftms = False
+                    self.post(("ftms", f"stopped ({FTMS_NAME} exited with code {exit_code}{during})"))
+                state = "off"
+            if state == "starting" and self._ready.is_set():
+                state = "on"
+                self.post(("ftms", "on"))
+            elif state == "starting" and time.monotonic() >= deadline and self._want_ftms:
+                self._want_ftms, state, quiet_exit = False, "off", True
+                self.post(("ftms", f"stopped ({FTMS_NAME} did not start within {self.t.port_wait_s:g} s)"))
+                worker.send("ftms off")
+            elif state in ("starting", "on") and not self._want_ftms:
+                worker.send("ftms off")
+                state, deadline = "stopping", time.monotonic() + self.t.grace_s
+            elif state == "stopping" and time.monotonic() >= deadline:
+                self._say(f"FTMS did not stop within {self.t.grace_s:g} s")
                 self.post(("ftms", "off"))
+                state = "off"
+            elif state == "off" and self._want_ftms and not quiet_exit:
+                self._ready.clear()
+                worker.send("ftms on")
+                state, deadline = "starting", time.monotonic() + self.t.port_wait_s
+            self._stop.wait(self.t.poll_s)
         return "stopped"
 
-    def _start_ftms(self) -> None:
-        """Start the FTMS service and wait for its port; on failure post why and leave FTMS off."""
-        ftms = self._start("ftms")
-        ready = self._wait_for_port(ftms)
-        if ready == "ready":
-            self._port_ready = True
-            self.post(("ftms", "on"))
-        elif ready == "exited":
-            self._ftms_failed(f"{NAMES['ftms']} exited with code {ftms.poll()} during start-up")
-        elif ready == "timeout":
-            self._ftms_failed(f"{NAMES['ftms']} did not open {self.host}:{self.port} within {self.t.port_wait_s:g} s")
-        # "stopped": the session is ending; _shutdown stops the child
-
-    def _ftms_failed(self, reason: str) -> None:
-        self._want_ftms = False
-        self._stop_child("ftms")
-        self.post(("ftms", f"stopped ({reason})"))
-
     def _shutdown(self) -> None:
-        ftms = self.children.get("ftms")
-        if ftms is not None:
-            self._confirm_zero(ftms)
-        for label in ("ftms", "cps"):  # each in its own try: one failure must not orphan the other
-            if label in self.children:
-                try:
-                    self._stop_child(label)
-                except Exception as e:
-                    self._say(f"could not stop the {NAMES[label]}: {e}")
-
-    def _stop_child(self, label: str) -> None:
-        child = self.children.pop(label)
-        if label == "ftms":
-            self._port_ready = False
-        grace = 0.0 if self._hurry.is_set() else self.t.grace_s
-        code = child.stop(grace, self.t.kill_after_s, self._hurry)
-        self._say(f"{NAMES[label]} stopped (exit code {code})")
-
-    def _confirm_zero(self, ftms: Child) -> None:
-        if not self._port_ready or self._hurry.is_set() or ftms.poll() is not None:
+        if self.worker is None:
             return
+        grace = 0.0 if self._hurry.is_set() else self.t.grace_s
         try:
-            if self._confirm is not None:
-                self._confirm(self.host, self.port)
-            else:
-                confirm_zero(self.host, self.port, say=lambda m: self._say(f"0 W check: {m}"))
-        except Exception as e:  # never let the safety check block the shutdown
-            self._say(f"0 W check failed: {e}")
-
-    def _start(self, label: str) -> Child:
-        child = self.children[label] = Child(label, self.commands[label], self.out, self._lock)
-        return child
-
-    def _wait_for_port(self, ftms: Child) -> str:
-        deadline = time.monotonic() + self.t.port_wait_s
-        while True:
-            if ftms.poll() is not None:
-                return "exited"
-            if self._stop.is_set():
-                return "stopped"
-            try:
-                with socket.create_connection((self.host, self.port), timeout=0.5):
-                    return "ready"
-            except OSError:
-                pass
-            if time.monotonic() >= deadline:
-                return "timeout"
-            self._stop.wait(self.t.poll_s)
+            code = self.worker.stop(grace, self.t.kill_after_s, self._hurry)
+            self._say(f"worker stopped (exit code {code})")
+        except Exception as e:
+            self._say(f"could not stop the worker: {e}")
 
     def _say(self, msg: str) -> None:
         with self._lock:

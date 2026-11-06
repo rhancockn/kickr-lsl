@@ -41,7 +41,7 @@ src/wahoo_lsl/apps/__init__.py
 src/wahoo_lsl/apps/paths.py           data folder + child command lines
 src/wahoo_lsl/apps/worker.py          wahoo-worker: dispatch to the existing CLIs
 src/wahoo_lsl/apps/server_status.py   child log line -> status (pure, no Tk)
-src/wahoo_lsl/apps/supervisor.py      ServerSupervisor (reuses launcher.Child/confirm_zero)
+src/wahoo_lsl/apps/supervisor.py      ServerSupervisor (drives one `server` worker; amended)
 src/wahoo_lsl/apps/lsl_source.py      LslFollower (LSL inlet -> dashboard events)
 src/wahoo_lsl/apps/server_app.py      Wahoo Server window
 src/wahoo_lsl/apps/dashboard_app.py   Wahoo Dashboard (existing Dashboard + LslFollower)
@@ -93,9 +93,13 @@ prints usage and exits 2. On the lab machine this also provides `wahoo-worker ls
 
 ### Supervisor (`supervisor.py`)
 
+> **Amended 2026-11-06:** the server now runs one `wahoo-worker server` process (FTMS and CPS
+> in one loop, one shared BLE link), not two children. There is no TCP port probe and no
+> `confirm_zero`; FTMS on/off go over the worker's stdin and the 0 W spin-down runs in the
+> worker. The "two children", port-wait and 0 W-check text below is superseded. See `2026-11-06-shared-ble-worker-design.md`.
+
 It reuses, without editing, from `wahoo_lsl.dashboard.launcher`:
 - `Child` (start, relay output with a `[label]` prefix, CTRL_BREAK then terminate then kill);
-- `confirm_zero`;
 - `Timings` / `timings_for`;
 - `_clean_code` via `Child.stop`.
 
@@ -147,7 +151,7 @@ caller's console. A windowed exe has none.
   child.
 - The console-subsystem worker children inherit it, so CTRL_BREAK reaches them and no
   console window is ever visible.
-- `confirm_zero` before stopping FTMS remains the safety net if a child must be killed.
+- (Superseded: there is no `confirm_zero`; the worker spins down in-process.)
 
 ### Status (`server_status.py`)
 
@@ -298,10 +302,10 @@ anyway" the first time.
 | Config missing or invalid | The server window shows the path and the error; services are not started; Restart retries |
 | Server already running (lock held) | "already running" message; exit |
 | FTMS port in use by another program at launch | "another program is using host:port" message; exit |
-| FTMS control switched off | 0 W check, FTMS service stopped; CPS logger and LSL keep running; dashboard target panel shows the service unreachable |
+| FTMS control switched off | `ftms off` to the worker, which spins down to 0 W in-process and stops FTMS; CPS logger and LSL keep running; dashboard target panel shows the service unreachable |
 | FTMS service exits on its own (or fails to start after being switched on, e.g. another device holds control) | Only FTMS stops; FTMS row shows the reason; checkbox unticked; CPS keeps running |
-| FTMS never opens its port | FTMS turned off; FTMS row shows `stopped (FTMS service did not open host:port within N s)`; checkbox unticked; CPS is still started |
-| CPS logger exits | FTMS is stopped (0 W check first); the state shows the exit code; Restart available |
+| FTMS never reports ready | FTMS turned off; FTMS row shows `stopped (FTMS service did not start within N s)`; checkbox unticked; CPS is still started |
+| CPS logger exits (the worker exits) | The worker has already stopped FTMS (0 W in-process); the state shows the exit code; Restart available |
 | Close with a client connected | Confirmation prompt, then ordered shutdown |
 | Close during shutdown | Hurry: skips the grace periods |
 | Dashboard: no CPS stream | CPS status "waiting for CPS LSL stream"; the FTMS panel works independently |
@@ -314,11 +318,10 @@ anyway" the first time.
   pattern-exists-in-source guard.
 - **`supervisor`:** fake children (short Python scripts, following the existing launcher
   tests):
-  - start order, and the port wait before CPS; CPS only when started with FTMS disabled;
-  - a CPS exit stops FTMS and ends the session; an FTMS exit stops only FTMS;
-  - `set_ftms(False)` runs the 0 W check and stops only FTMS; `set_ftms(True)` starts it
-    again while CPS keeps running (same CPS process);
-  - stop order with the 0 W check called before FTMS stops;
+  - (amended: one fake worker obeying the stdin protocol, see the 2026-11-06 spec)
+  - ready line, then "on"; FTMS disabled at start; an unrequested FTMS exit only unticks;
+  - `set_ftms(False)` sends `ftms off`; `set_ftms(True)` sends `ftms on` (same worker);
+  - a worker exit ends the session; stop sends `stop`;
   - Restart;
   - hurry on a second stop;
   - the line sink writes to the queue and the log file.
@@ -353,7 +356,7 @@ anyway" the first time.
 9. Untick FTMS control while recording: no gap in the CPS log or LSL stream; another
    app/device (e.g. a training app) can connect to the KICKR and control resistance while
    the CPS logger stays connected. Tick it again after the other app disconnects: FTMS ready.
-10. Close with FTMS control off: no 0 W check, both workers gone. Open a second server
+10. Close with FTMS control off: nothing to spin down, the worker is gone. Open a second server
     while FTMS is off: "already running".
 11. Uninstall: `%ProgramData%\wahoo-lsl` configs and logs remain.
 
