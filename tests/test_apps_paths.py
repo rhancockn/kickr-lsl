@@ -80,4 +80,4 @@ def test_worker_dispatches_lsl(monkeypatch):
 def test_worker_usage(capsys):
     assert worker.main([]) == 2
     assert worker.main(["nope"]) == 2
-    assert "usage: wahoo-worker {ftms|lsl}" in capsys.readouterr().err
+    assert "usage: wahoo-worker {ftms|lsl|server}" in capsys.readouterr().err
