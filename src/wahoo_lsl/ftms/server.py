@@ -1,12 +1,19 @@
-"""Localhost JSON-lines TCP endpoint (spec §8). One client at a time."""
+"""JSON-lines TCP endpoint (spec §8). One client at a time.
+
+Loopback clients are always accepted. With a non-empty `allowed` list the server listens on the
+LAN and also accepts clients whose address matches a listed IP or DNS name (see allow.py);
+others get a `not_allowed` error and are closed without disturbing the active session.
+"""
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from contextlib import suppress
 from typing import Any, Protocol
 
+from .allow import Resolver, is_allowed, resolve_host
 from .controller import LinkDown
 from .slew import MAX_SLEW_W_PER_S
 
@@ -28,13 +35,27 @@ class ControllerApi(Protocol):
     async def spin_down(self, reason: str) -> bool: ...
 
 
+def peer_ip(writer: asyncio.StreamWriter) -> str:
+    return writer.get_extra_info("peername")[0]
+
+
 def error_reply(code: str, detail: str) -> dict[str, Any]:
     return {"ok": False, "error": code, "detail": detail}
 
 
 class ControlServer:
-    def __init__(self, controller: ControllerApi, host: str, port: int) -> None:
+    def __init__(
+        self,
+        controller: ControllerApi,
+        host: str,
+        port: int,
+        *,
+        allowed: Sequence[str] = (),
+        resolve: Resolver = resolve_host,
+    ) -> None:
         self._controller = controller
+        self._allowed = tuple(allowed)
+        self._resolve = resolve
         self._host = host
         self._port = port
         self._server: asyncio.base_events.Server | None = None
@@ -50,7 +71,8 @@ class ControlServer:
     async def start_serving(self) -> None:
         assert self._server is not None, "bind() first"
         await self._server.start_serving()
-        log.info("Accepting client commands on %s:%d", self._host, self.port)
+        extra = f" (local + allowed: {', '.join(self._allowed)})" if self._allowed else ""
+        log.info("Accepting client commands on %s:%d%s", self._host, self.port, extra)
 
     @property
     def port(self) -> int:
@@ -72,6 +94,17 @@ class ControlServer:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
+        if self._allowed:
+            ip = peer_ip(writer)
+            if not await is_allowed(ip, self._allowed, self._resolve):
+                log.warning("Refusing %s: not in allowed_hosts", ip)
+                detail = f"this machine ({ip}) is not in ftms.allowed_hosts"
+                with suppress(ConnectionError):
+                    await _send(writer, error_reply("not_allowed", detail))
+                writer.close()
+                with suppress(ConnectionError):
+                    await writer.wait_closed()
+                return
         if self._active is not None:
             log.warning("Rejecting second client %s: busy", peer)
             with suppress(ConnectionError):

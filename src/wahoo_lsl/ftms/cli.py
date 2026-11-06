@@ -178,11 +178,13 @@ async def _serve(cfg: Any, backend: Any = None, stop: asyncio.Event | None = Non
 
     link = FtmsLink(cfg, backend=backend)
     controller = Controller(cfg, link)
-    server = ControlServer(controller, cfg.ftms.host, cfg.ftms.port)
+    bind_host = cfg.ftms.bind_host
+    server = ControlServer(controller, bind_host, cfg.ftms.port, allowed=cfg.ftms.allowed_hosts)
+    await _warn_unresolvable(cfg.ftms.allowed_hosts)
     try:
         await server.bind()  # before BLE, so "port in use" fails immediately
     except OSError as e:
-        log.error("Cannot listen on %s:%d: %s", cfg.ftms.host, cfg.ftms.port, e)
+        log.error("Cannot listen on %s:%d: %s", bind_host, cfg.ftms.port, e)
         return EXIT_CONFIG
     if stop is None:
         stop = asyncio.Event()
@@ -207,6 +209,15 @@ async def _serve(cfg: Any, backend: Any = None, stop: asyncio.Event | None = Non
         await controller.close(reason)
     log.info("Stopped")
     return code
+
+
+async def _warn_unresolvable(allowed: Sequence[str]) -> None:
+    """Typo hint only: names are resolved again on every connection."""
+    from .allow import normalize_ip, resolve_host
+
+    for name in allowed:
+        if normalize_ip(name) is None and not await resolve_host(name):
+            log.warning("allowed host %r does not resolve", name)
 
 
 def _install_signal_handlers(stop: asyncio.Event) -> None:

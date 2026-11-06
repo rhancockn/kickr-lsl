@@ -345,3 +345,53 @@ def test_set_rejects_invalid_slew_with_usage_error(bad, capsys):
         main(["set", "150", "--slew", bad])
     assert exc.value.code == 2
     assert "--slew" in capsys.readouterr().err
+
+
+def _remote_cfg(port, hosts):
+    return parse_ftms_config(
+        {
+            "device": {"name": "KICKR"},
+            "reconnect": {"backoff_s": [0.01]},
+            "ftms": {"port": port, "allowed_hosts": hosts, "listen_host": "127.0.0.1"},
+        }
+    )
+
+
+def test_serve_remote_mode_binds_listen_host_and_logs_prefix(caplog):
+    backend = FakeFtmsBackend()
+    port = free_port()
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(_serve(_remote_cfg(port, ["127.0.0.1"]), backend, stop))
+        await _wait(lambda: "Accepting client commands" in caplog.text)
+        stop.set()
+        return await asyncio.wait_for(task, 5.0)
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(scenario()) == 0
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Accepting client commands on")]
+    assert len(lines) == 1
+    assert lines[0].startswith("Accepting client commands on 127.0.0.1:")
+    assert "(local + allowed: 127.0.0.1)" in lines[0]
+
+
+def test_serve_warns_unresolvable_name(monkeypatch, caplog):
+    async def no_addresses(name):
+        return []
+
+    monkeypatch.setattr("wahoo_lsl.ftms.allow.resolve_host", no_addresses)
+    backend = FakeFtmsBackend()
+    port = free_port()
+
+    async def scenario():
+        stop = asyncio.Event()
+        task = asyncio.create_task(_serve(_remote_cfg(port, ["no-such-host.invalid"]), backend, stop))
+        await _wait(lambda: "Accepting client commands" in caplog.text)
+        stop.set()
+        return await asyncio.wait_for(task, 5.0)
+
+    with caplog.at_level(logging.INFO):
+        assert asyncio.run(scenario()) == 0
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert any("allowed host 'no-such-host.invalid' does not resolve" in r.getMessage() for r in warnings)

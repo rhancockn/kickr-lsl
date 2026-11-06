@@ -180,9 +180,44 @@ with KickrClient() as kickr:            # 127.0.0.1:47610
 # leaving the block disconnects -> service spins down to 0 W
 ```
 
-Wire protocol (newline-delimited JSON on 127.0.0.1:47610): `{"cmd":"set","watts":150}` ,
-`{"cmd":"slew","w_per_s":20}` and `{"cmd":"read"}`; errors are
-`{"ok":false,"error":"bad_request|invalid_watts|invalid_slew|link_down|busy","detail":...}`.
+### Remote clients (allowed hosts)
+
+By default the service listens on `127.0.0.1` only. To let other lab PCs connect over plain TCP,
+list them (DNS names or IP literals, case-insensitive) in `ftms.json`:
+
+```json
+"ftms": { "host": "127.0.0.1", "port": 47610, "allowed_hosts": ["lab-pc-3.lab.local", "10.0.0.23"] }
+```
+
+With a non-empty `allowed_hosts` the service listens on `ftms.listen_host` (default `"0.0.0.0"`; set
+it to one interface's IPv4 address to limit it) and accepts loopback plus the listed machines; anyone
+else gets `not_allowed` and is closed. `ftms.host` must stay `127.0.0.1` in this mode, and
+`listen_host` needs `allowed_hosts`. Names are re-resolved on every connection (2 s limit). Accepted
+risk: the check is by source address only, with no authentication, so anyone who can spoof or share a
+listed address can set trainer power. Local tools must dial `127.0.0.1`: the PC's own LAN address is
+refused unless it is listed. Firewall: Windows installs already open the port on the private profile;
+macOS and Linux may prompt or need a rule for the port.
+
+Remote PCs use `KickrClient("server-pc.lab.local", 47610)` or a plain socket.
+
+### Wire protocol (plain-socket clients)
+
+- TCP, UTF-8, one JSON object per line (`\n`), requests and replies alternate. Request lines are
+  limited to 4096 bytes. One client at a time; the trainer returns to 0 W when it disconnects.
+- If the connection is refused the server sends one error line immediately after connect, without
+  waiting for a request, then closes: `busy` (another client is connected) or `not_allowed`
+  (your address is not in `ftms.allowed_hosts`). Read a line before your first request.
+- `{"cmd":"set","watts":150}` -> `{"ok":true,"target_w":150,"clamped":false}` (non-negative integer;
+  clamped to `max_watts`; returns before the trainer confirms).
+- `{"cmd":"slew","w_per_s":20}` -> `{"ok":true,"slew_w_per_s":20.0}` (0..1000, 0 = immediate; applies to
+  increases and lasts until you disconnect).
+- `{"cmd":"read"}` -> `{"ok":true,"link":"ready","link_epoch":1,"target":{...},"power":{...},...}`:
+  - `link`, `link_epoch`: BLE link state and a counter that increases after each reconnect.
+  - `target`: `requested_w`, `confirmed_w`, `pending`, `t_lsl`, `setpoint_w`, `ramp_end_t_lsl`.
+  - `power`: `watts`, `t_lsl`, `age_s` (null until the first notification).
+  - `last_error`, `last_error_t_lsl`; `slew`: `w_per_s`, `update_interval_s`.
+- Errors: `{"ok":false,"error":CODE,"detail":"..."}` with CODE one of
+  `bad_request|invalid_watts|invalid_slew|link_down|busy|not_allowed`.
 
 ### Manual hardware checklist (FTMS)
 

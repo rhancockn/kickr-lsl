@@ -352,3 +352,112 @@ def test_unknown_command_lists_slew():
         await server.close()
 
     run(scenario)
+
+
+# ---- allowed hosts --------------------------------------------------------------------
+
+
+async def fake_resolve(name):
+    return {"lab-pc-3": ["10.0.0.23"], "lab-pc-4": ["10.0.0.24"]}.get(name, [])
+
+
+async def never_resolve(name):
+    raise AssertionError("resolver must not be used")
+
+
+async def serving_allowed(ctl, allowed, resolve=fake_resolve):
+    server = ControlServer(ctl, "127.0.0.1", 0, allowed=allowed, resolve=resolve)
+    await server.bind()
+    await server.start_serving()
+    return server
+
+
+def test_refused_peer_gets_not_allowed_and_closed(monkeypatch, caplog):
+    import wahoo_lsl.ftms.server as srv
+
+    monkeypatch.setattr(srv, "peer_ip", lambda writer: "10.0.0.99")
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving_allowed(ctl, ["lab-pc-3"])
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        reply = json.loads(await reader.readline())
+        assert reply["ok"] is False and reply["error"] == "not_allowed"
+        assert "10.0.0.99" in reply["detail"] and "ftms.allowed_hosts" in reply["detail"]
+        assert await reader.readline() == b""
+        writer.close()
+        await server.close()
+
+    with caplog.at_level("WARNING"):
+        run(scenario)
+    assert ctl.calls == []
+    assert "Refusing 10.0.0.99: not in allowed_hosts" in caplog.text
+
+
+def test_allowed_peer_served(monkeypatch):
+    import wahoo_lsl.ftms.server as srv
+
+    monkeypatch.setattr(srv, "peer_ip", lambda writer: "10.0.0.23")
+
+    async def scenario():
+        server = await serving_allowed(StubController(), ["lab-pc-3"])
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert (await ask(reader, writer, {"cmd": "read"}))["ok"] is True
+        writer.close()
+        await server.close()
+
+    run(scenario)
+
+
+def test_refused_peer_does_not_disturb_active_session(monkeypatch):
+    import wahoo_lsl.ftms.server as srv
+
+    ips = iter(["10.0.0.23", "10.0.0.99"])
+    monkeypatch.setattr(srv, "peer_ip", lambda writer: next(ips))
+    ctl = StubController()
+
+    async def scenario():
+        server = await serving_allowed(ctl, ["lab-pc-3"])
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert (await ask(reader, writer, {"cmd": "read"}))["ok"] is True
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)
+        assert json.loads(await r2.readline())["error"] == "not_allowed"
+        w2.close()
+        assert (await ask(reader, writer, {"cmd": "read"}))["ok"] is True
+        assert ctl.spin_downs == [] and ctl.calls == []
+        writer.close()
+        await server.close()
+
+    run(scenario)
+
+
+def test_busy_between_allowed_peers(monkeypatch):
+    import wahoo_lsl.ftms.server as srv
+
+    ips = iter(["10.0.0.23", "10.0.0.24"])
+    monkeypatch.setattr(srv, "peer_ip", lambda writer: next(ips))
+
+    async def scenario():
+        server = await serving_allowed(StubController(), ["lab-pc-3", "lab-pc-4"])
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert (await ask(reader, writer, {"cmd": "read"}))["ok"] is True
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)
+        assert json.loads(await r2.readline())["error"] == "busy"
+        w2.close()
+        writer.close()
+        await server.close()
+
+    run(scenario)
+
+
+def test_empty_allowed_skips_check():
+    async def scenario():
+        server = ControlServer(StubController(), "127.0.0.1", 0, resolve=never_resolve)
+        await server.bind()
+        await server.start_serving()
+        reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+        assert (await ask(reader, writer, {"cmd": "read"}))["ok"] is True
+        writer.close()
+        await server.close()
+
+    run(scenario)
