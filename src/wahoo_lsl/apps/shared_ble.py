@@ -43,6 +43,8 @@ class SharedBackend:
         self._real: Any = None
         self._up = False
         self._connecting: asyncio.Task | None = None
+        self._waiters = 0  # handles awaiting the connect in flight
+        self._releasing: set[asyncio.Task] = set()
         self._epoch = 0
         self._attached: set[Handle] = set()
         self._subs: dict[str, tuple[Handle, Any]] = {}  # char uuid -> (owner, char)
@@ -102,7 +104,19 @@ class SharedBackend:
             if self._connecting is None:
                 self._device = handle.device
                 self._connecting = asyncio.ensure_future(self._connect_real(handle.device))
-            await asyncio.shield(self._connecting)  # a failure raises to every waiter
+            task = self._connecting
+            self._waiters += 1
+            try:
+                await asyncio.shield(task)  # a failure raises to every waiter
+                if not self._up:
+                    raise BleakError(_NOT_CONNECTED)  # dropped before we resumed
+                handle._epoch = self._epoch
+                self._attached.add(handle)
+            finally:
+                self._waiters -= 1
+                if not self._waiters and not self._attached:
+                    task.add_done_callback(self._abandoned)
+            return
         handle._epoch = self._epoch
         self._attached.add(handle)
 
@@ -117,6 +131,16 @@ class SharedBackend:
             raise
         finally:
             self._connecting = None
+
+    def _abandoned(self, task: asyncio.Task) -> None:
+        """The connect finished with nobody left to use it: release the link."""
+        if task.cancelled() or task.exception() is not None:  # also marks the error retrieved
+            return
+        if self._waiters or self._attached or not self._up:
+            return
+        release = asyncio.ensure_future(_bounded(self._reset().disconnect()))
+        self._releasing.add(release)
+        release.add_done_callback(self._releasing.discard)
 
     def _on_real_disconnect(self, real: Any) -> None:
         if not self._up or real is not self._real:
@@ -147,6 +171,8 @@ class SharedBackend:
             if owner is handle:
                 del self._subs[uuid]
                 await _bounded(real.stop_notify(char))
+        if handle not in self._attached or handle._epoch != self._epoch:
+            return  # the link dropped meanwhile; the drop path already reset it
         self._attached.discard(handle)
         if not self._attached:
             self._reset()  # before the real disconnect, so its callback is ignored

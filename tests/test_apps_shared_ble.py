@@ -350,3 +350,94 @@ def test_cps_client_and_second_consumer_share_one_connect():
         assert second.is_connected  # CPS detached, the second consumer keeps the link
         await second.disconnect()
     run(go())
+
+
+def test_cancelled_sole_waiter_releases_link_when_connect_succeeds():
+    async def go():
+        inner, sb = setup()
+        inner.delay = 0.02
+        (a,), got = handles(sb, 1)
+        t = asyncio.create_task(a.connect())
+        await asyncio.sleep(0.005)
+        t.cancel()
+        await asyncio.sleep(0.05)
+        real = inner.clients[0]
+        assert real.calls == [("disconnect",)] and not real.is_connected
+        assert got == []  # the release is intentional: no callbacks
+        assert not a.is_connected
+        await a.connect()  # a fresh real client afterwards
+        assert len(inner.clients) == 2
+    run(go())
+
+
+def test_cancelled_sole_waiter_failed_connect_leaves_nothing():
+    async def go():
+        import gc
+        errors = []
+        asyncio.get_running_loop().set_exception_handler(lambda _l, ctx: errors.append(ctx))
+        inner, sb = setup()
+        inner.delay, inner.fail = 0.02, True
+        (a,), _ = handles(sb, 1)
+        t = asyncio.create_task(a.connect())
+        await asyncio.sleep(0.005)
+        t.cancel()
+        await asyncio.sleep(0.05)
+        gc.collect()
+        assert errors == []
+        inner.fail = False
+        await a.connect()
+        assert len(inner.clients) == 2 and a.is_connected
+    run(go())
+
+
+def test_cancelled_one_of_two_waiters_keeps_link():
+    async def go():
+        inner, sb = setup()
+        inner.delay = 0.02
+        (a, b), _ = handles(sb)
+        ta = asyncio.create_task(a.connect())
+        tb = asyncio.create_task(b.connect())
+        await asyncio.sleep(0.005)
+        ta.cancel()
+        await tb
+        await asyncio.sleep(0.01)
+        assert b.is_connected and ("disconnect",) not in inner.clients[0].calls
+    run(go())
+
+
+def test_connect_raises_if_link_dropped_before_waiter_resumes():
+    async def go():
+        inner, sb = setup()
+        (a,), _ = handles(sb, 1)
+        real_connect = RealClient.connect
+
+        async def connect_then_drop(self):
+            await real_connect(self)
+            asyncio.get_running_loop().call_soon(self.drop)
+
+        RealClient.connect = connect_then_drop
+        try:
+            with pytest.raises(BleakError, match="not connected"):
+                await a.connect()
+        finally:
+            RealClient.connect = real_connect
+        assert not a.is_connected
+    run(go())
+
+
+def test_drop_during_detach_does_not_double_disconnect():
+    async def go():
+        inner, sb = setup()
+        (a,), got = handles(sb, 1)
+        await a.connect()
+        await a.start_notify(CHAR_A, lambda *_: None)
+        real = inner.clients[0]
+
+        async def stop_and_drop(char):
+            real.drop()
+
+        real.stop_notify = stop_and_drop
+        await a.disconnect()
+        assert ("disconnect",) not in real.calls
+        assert sb.epoch == 1  # only the drop bumped it
+    run(go())
