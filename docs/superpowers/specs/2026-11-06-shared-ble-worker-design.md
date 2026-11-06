@@ -131,7 +131,8 @@ wahoo-worker server -c config.json -f ftms.json [--no-ftms] [--debug]
   Unknown commands log a warning.
 - **Reports.** These are the supervisor's only contract besides the log lines. Each is a
   `[worker]` line, logged at INFO through the `wahoo_lsl.apps` logger:
-  - `ftms exited with code N` whenever an FTMS task ends, for any reason;
+  - `ftms exited with code N` whenever an FTMS task ends, with ` (requested)` appended when it
+    ended because of `ftms off`/`stop` (the supervisor keeps no counter; unmarked means a crash);
   - `cps exited with code N` when CPS ends. The worker then stops FTMS, if it is running,
     and exits with N.
 - **Signals.** SIGINT, SIGTERM and SIGBREAK where available behave like `stop`. A second
@@ -169,8 +170,7 @@ call hurries), `set_ftms`, `join`, `running`, and the posted events
   - **Start-up timeout:** if no ready line arrives within `port_wait_s`, post
     `("ftms","stopped (FTMS service did not start within N s)")`, untick, and send
     `ftms off`.
-  - **FTMS exit:** a `[worker] ftms exited with code N` line that the supervisor did not
-    ask for posts `("ftms","stopped (FTMS service exited with code N)")` and unticks.
+  - **FTMS exit:** a `[worker] ftms exited with code N` line without `(requested)` posts `("ftms","stopped (FTMS service exited with code N)")` and unticks.
     During start-up the reason reads "… during start-up".
   - **Ticking:** sends `ftms on`, and the ready line then posts "on".
   - **Unticking:** sends `ftms off`, waits for `ftms exited` (up to `grace_s`), then posts

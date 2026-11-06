@@ -438,6 +438,99 @@ def test_drop_during_detach_does_not_double_disconnect():
 
         real.stop_notify = stop_and_drop
         await a.disconnect()
-        assert ("disconnect",) not in real.calls
+        await asyncio.sleep(0)
+        assert real.calls.count(("disconnect",)) == 1  # the drop path's release only, not a second one
         assert sb.epoch == 1  # only the drop bumped it
     run(go())
+
+
+def test_drop_disconnects_the_dead_real_client():
+    async def go():
+        inner, sb = setup()
+        (a,), got = handles(sb, 1)
+        await a.connect()
+        real = inner.clients[0]
+        real.drop()
+        await asyncio.sleep(0.05)
+        assert real.calls.count(("disconnect",)) == 1
+        assert got == [a]  # the intentional-looking callback from disconnect() is ignored
+    run(go())
+
+
+def test_failing_release_after_drop_never_raises_and_link_recovers():
+    async def go():
+        inner, sb = setup()
+        (a,), got = handles(sb, 1)
+        await a.connect()
+        real = inner.clients[0]
+
+        async def boom():
+            raise OSError("boom")
+
+        real.disconnect = boom
+        real.drop()
+        a2 = sb.make_client(KICKR, got.append)
+        await a2.connect()
+        assert a2.is_connected and inner.connects == 2
+    run(go())
+
+
+def test_connect_waits_for_the_release_of_the_dropped_client():
+    async def go():
+        inner, sb = setup()
+        (a,), got = handles(sb, 1)
+        await a.connect()
+        real = inner.clients[0]
+        gate = asyncio.Event()
+
+        async def slow():
+            await gate.wait()
+
+        real.disconnect = slow
+        real.drop()
+        a2 = sb.make_client(KICKR, got.append)
+        t = asyncio.ensure_future(a2.connect())
+        await asyncio.sleep(0.05)
+        assert inner.connects == 1 and not t.done()
+        gate.set()
+        await t
+        assert inner.connects == 2 and a2.is_connected
+    run(go())
+
+
+def test_connect_waits_for_an_in_flight_detach_disconnect():
+    async def go():
+        inner, sb = setup()
+        (a,), got = handles(sb, 1)
+        await a.connect()
+        real = inner.clients[0]
+        gate = asyncio.Event()
+
+        async def slow():
+            await gate.wait()
+
+        real.disconnect = slow
+        d = asyncio.ensure_future(a.disconnect())
+        await asyncio.sleep(0.05)
+        b = sb.make_client(KICKR, got.append)
+        t = asyncio.ensure_future(b.connect())
+        await asyncio.sleep(0.05)
+        assert inner.connects == 1 and not t.done()
+        gate.set()
+        await asyncio.gather(d, t)
+        assert inner.connects == 2 and b.is_connected
+    run(go())
+
+
+def test_other_device_logs_why(caplog):
+    async def go():
+        inner, sb = setup()
+        (a,), _ = handles(sb, 1)
+        await a.connect()
+        with caplog.at_level(logging.WARNING, logger="wahoo_lsl.apps.shared_ble"):
+            assert await sb.find_by_address(OTHER.address, 1) is None
+            with pytest.raises(BleakError):
+                await sb.make_client(OTHER, lambda h: None).connect()
+    run(go())
+    msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert msgs == ["only one device is supported; already connected to KICKR"] * 2

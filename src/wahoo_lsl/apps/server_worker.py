@@ -162,7 +162,8 @@ class _Ftms:
         except Exception:
             log.exception("FTMS service failed")
         finally:
-            log.info("ftms exited with code %d", code)
+            # the supervisor tells a stop it asked for from a crash by this suffix
+            log.info("ftms exited with code %d%s", code, " (requested)" if stop.is_set() else "")
         return code
 
     async def stop(self) -> None:
@@ -296,6 +297,9 @@ def main(argv: Sequence[str] | None = None, *, backend: BleBackend | None = None
     except ConfigError as e:
         print(f"[worker] config error: {e}", flush=True)
         return cli.EXIT_CONFIG
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:  # WorkerProcess decodes the worker's output as UTF-8
+        reconfigure(encoding="utf-8", errors="replace")
     setup_logging(args.debug)
     try:
         return asyncio.run(_main_async(args, cps_cfg, ftms_cfg, backend, stdin or sys.stdin))

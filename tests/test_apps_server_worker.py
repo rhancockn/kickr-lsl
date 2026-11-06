@@ -197,6 +197,33 @@ def test_no_ftms_runs_cps_only(tmp_path, caplog):
     assert count(caplog, "cps exited with code 0") == 1
 
 
+def test_exit_reports_say_whether_they_were_requested(tmp_path, caplog):
+    async def scenario(b, commands, task):
+        await wait(lambda: streaming(b))
+        await wait(lambda: p.CONTROL_POINT_UUID in b.clients[0].ftms.callbacks)
+        commands.put_nowait("ftms off")
+        await wait(lambda: count(caplog, "ftms exited with code 0 (requested)") == 1)
+        commands.put_nowait("ftms on")
+        await wait(lambda: count(caplog, READY) == 2)
+        await wait(lambda: p.CONTROL_POINT_UUID in b.clients[0].ftms.callbacks)
+        b.clients[0].drop()  # FTMS gives up (no reconnect): not requested
+        await wait(lambda: count(caplog, "ftms exited with code 4") == 1)
+        commands.put_nowait("stop")
+
+    drive(tmp_path, caplog, scenario, cps_reconnect=True, ftms_reconnect=False)
+    ftms_lines = [x for x in msgs(caplog) if "ftms exited with code" in x]
+    assert ftms_lines == ["ftms exited with code 0 (requested)", "ftms exited with code 4"]
+
+
+def test_stop_reports_the_ftms_exit_as_requested(tmp_path, caplog):
+    async def scenario(b, commands, task):
+        await wait(lambda: streaming(b))
+        commands.put_nowait("stop")
+
+    drive(tmp_path, caplog, scenario)
+    assert [x for x in msgs(caplog) if "ftms exited with code" in x] == ["ftms exited with code 0 (requested)"]
+
+
 def test_ftms_off_spins_down_keeps_cps_then_on_again(tmp_path, caplog):
     async def scenario(b, commands, task):
         await wait(lambda: streaming(b))
@@ -450,3 +477,25 @@ def test_worker_dispatches_server(monkeypatch):
     monkeypatch.setattr(server_worker, "main", lambda argv: calls.append(argv) or 0)
     assert worker.main(["server", "-c", "a"]) == 0
     assert calls == [["-c", "a"]]
+
+
+def test_main_reconfigures_stdout_to_utf8(tmp_path, monkeypatch):
+    calls = []
+
+    class Out:
+        def reconfigure(self, **kw):
+            calls.append(kw)
+
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(server_worker.sys, "stdout", Out())
+    monkeypatch.setattr(server_worker, "load_config", lambda p: object())
+    monkeypatch.setattr(server_worker, "load_ftms_config", lambda p: object())
+    monkeypatch.setattr(server_worker, "setup_logging", lambda d: calls.append("logging"))
+    monkeypatch.setattr(server_worker.asyncio, "run", lambda coro: (coro.close(), 0)[1])
+    assert server_worker.main(["-c", "a", "-f", "b"]) == 0
+    assert calls == [{"encoding": "utf-8", "errors": "replace"}, "logging"]

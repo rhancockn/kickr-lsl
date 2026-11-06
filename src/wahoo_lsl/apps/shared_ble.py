@@ -76,7 +76,10 @@ class SharedBackend:
     async def find_by_address(self, address: str, timeout: float) -> Any | None:
         async with self._scan_lock:
             if await self._linked():
-                return self._device if _address(self._device) == address.lower() else None
+                if _address(self._device) == address.lower():
+                    return self._device
+                log.warning("only one device is supported; already connected to %s", _label(self._device))
+                return None
             return await self._inner.find_by_address(address, timeout)
 
     def make_client(self, device: Any, disconnected_callback: Callable[[Any], None]) -> Handle:
@@ -95,6 +98,7 @@ class SharedBackend:
 
     async def _attach(self, handle: Handle) -> None:
         if self._device is not None and _address(handle.device) != _address(self._device):
+            log.warning("only one device is supported; already connected to %s", _label(self._device))
             raise BleakError(
                 f"shared link: already connected to {_label(self._device)}; only one device is supported"
             )
@@ -121,6 +125,7 @@ class SharedBackend:
         self._attached.add(handle)
 
     async def _connect_real(self, device: Any) -> None:
+        await self._drain_releases()  # never overlap a real client that is still being released
         real = self._inner.make_client(device, self._on_real_disconnect)
         try:
             self._real = real
@@ -132,21 +137,38 @@ class SharedBackend:
         finally:
             self._connecting = None
 
+    async def _drain_releases(self) -> None:
+        while self._releasing:
+            pending = set(self._releasing)
+            await asyncio.wait(pending)  # _bounded never raises; this never yields forever
+            self._releasing.difference_update(pending)
+
+    def _release(self, real: Any) -> asyncio.Future | None:
+        """Disconnect a real client in the background (bounded, tracked, never raises)."""
+        if real is None:
+            return None
+        try:
+            release = asyncio.ensure_future(_bounded(real.disconnect()))
+        except Exception as e:  # e.g. no running loop; never raise from a callback
+            log.debug("could not schedule the release of the real client: %r", e)
+            return None
+        self._releasing.add(release)
+        release.add_done_callback(self._releasing.discard)
+        return release
+
     def _abandoned(self, task: asyncio.Task) -> None:
         """The connect finished with nobody left to use it: release the link."""
         if task.cancelled() or task.exception() is not None:  # also marks the error retrieved
             return
         if self._waiters or self._attached or not self._up:
             return
-        release = asyncio.ensure_future(_bounded(self._reset().disconnect()))
-        self._releasing.add(release)
-        release.add_done_callback(self._releasing.discard)
+        self._release(self._reset())
 
     def _on_real_disconnect(self, real: Any) -> None:
         if not self._up or real is not self._real:
             return  # intentional disconnect, a failed connect, or a stale client
         handles = list(self._attached)
-        self._reset()
+        self._release(self._reset())  # free the dead client's GATT objects, as a plain bleak client would
         for handle in handles:
             try:
                 handle._disconnected_callback(handle)
@@ -176,7 +198,9 @@ class SharedBackend:
         self._attached.discard(handle)
         if not self._attached:
             self._reset()  # before the real disconnect, so its callback is ignored
-            await _bounded(real.disconnect())
+            release = self._release(real)
+            if release is not None:
+                await asyncio.shield(release)
 
     def _live(self, handle: Handle) -> Any:
         if not (self._up and handle in self._attached and handle._epoch == self._epoch):

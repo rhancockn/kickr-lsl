@@ -36,11 +36,11 @@ def note(word):
         f.write(word + "\n")
 
 
-def ftms_exit(code):
+def ftms_exit(code, requested=False):
     global ftms_on
     ftms_on = False
     note("ftms")
-    say(f"[worker] 12:00:00 INFO    wahoo_lsl.apps.server_worker: ftms exited with code {code}")
+    say(f"[worker] 12:00:00 INFO    wahoo_lsl.apps.server_worker: ftms exited with code {code}{' (requested)' if requested else ''}")
 
 
 def ftms_start():
@@ -54,7 +54,7 @@ def ftms_start():
 def finish():
     with lock:
         if ftms_on:
-            ftms_exit(0)
+            ftms_exit(0, True)
         note("cps")
         say("[worker] 12:00:00 INFO    wahoo_lsl.apps.server_worker: cps exited with code 0")
     done.set()
@@ -66,7 +66,7 @@ def late_exit():
     with lock:
         if ftms_on and pending_off:
             pending_off = False
-            ftms_exit(0)
+            ftms_exit(0, True)
             if restart:
                 restart = False
                 note("ftms-on")
@@ -83,13 +83,15 @@ def read_stdin():
             elif cmd == "ftms on" and not ftms_on:
                 note("ftms-on")
                 ftms_start()
+            elif cmd == "ftms off" and pending_off:
+                restart = False  # the last of on/off wins; one exit line for the one task
             elif cmd == "ftms off" and ftms_on and late_off:
                 note("ftms-off")
                 pending_off = True
                 threading.Thread(target=late_exit, daemon=True).start()
             elif cmd == "ftms off" and ftms_on and not ignore_off:
                 note("ftms-off")
-                ftms_exit(0)
+                ftms_exit(0, True)
             elif cmd == "stop" and not ignore_stop:
                 break
     if not ignore_stop:  # `stop` or EOF

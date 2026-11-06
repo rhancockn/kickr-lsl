@@ -157,6 +157,26 @@ def test_retick_after_an_off_timeout_ignores_the_late_exit_and_waits_for_ready(t
     finish(sup, events)
 
 
+def test_real_crash_after_timeout_retick_untick_is_still_reported(tmp_path):
+    t = Timings(port_wait_s=5.0, cps_early_exit_s=0.3, grace_s=0.3, kill_after_s=2.0, poll_s=0.05)
+    o, sup, events, out = running(tmp_path, "--late-ftms-off", 1.0, "--ftms-dies", 4, 3.0, timings=t)
+    wait_for(lambda: events.of("ftms") == ["on"])
+    sup.set_ftms(False)
+    wait_for(lambda: events.of("ftms") == ["on", "off"])  # off timeout; the old task is still ending
+    sup.set_ftms(True)
+    time.sleep(0.2)
+    sup.set_ftms(False)  # a second `ftms off` before the one old exit line
+    wait_for(lambda: order(o) == ["ftms-off", "ftms"])
+    time.sleep(0.3)
+    assert not [e for e in events.of("ftms") if e.startswith("stopped")]
+    sup.set_ftms(True)
+    wait_for(lambda: events.of("ftms")[-1] == "on")
+    wait_for(lambda: events.of("ftms")[-1] == "stopped (FTMS service exited with code 4)", 15)
+    time.sleep(0.2)
+    assert sup.running
+    finish(sup, events)
+
+
 def test_worker_exit_during_startup_ends_the_session_with_its_code(tmp_path):
     sup, events, _ = make(worker(tmp_path / "order", "--exit", 3, 0.1))
     sup.start()

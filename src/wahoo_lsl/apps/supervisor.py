@@ -21,7 +21,7 @@ from .worker_process import WorkerProcess
 Post = Callable[[tuple[str, Any]], None]
 FTMS_NAME, CPS_NAME = "FTMS service", "CPS logger"
 FTMS_READY = "Accepting client commands on"
-FTMS_EXIT = re.compile(r"^\[worker\].*\bftms exited with code (-?\d+)")
+FTMS_EXIT = re.compile(r"^\[worker\].*\bftms exited with code (-?\d+)( \(requested\))?")
 
 
 class LineSink:
@@ -53,7 +53,7 @@ class ServerSupervisor:
         self._lock = threading.Lock()  # shared with the relay thread: whole lines only
         self._stop, self._hurry = threading.Event(), threading.Event()
         self._ready = threading.Event()  # set by the relay: FTMS logged its ready line
-        self._exits: queue.Queue[int] = queue.Queue()  # set by the relay: codes of ended FTMS tasks
+        self._exits: queue.Queue[tuple[int, bool]] = queue.Queue()  # set by the relay: (code, requested) of ended FTMS tasks
         self._thread: threading.Thread | None = None
         self.worker: WorkerProcess | None = None
 
@@ -99,14 +99,13 @@ class ServerSupervisor:
         if line.startswith("[ftms]") and FTMS_READY in line:
             self._ready.set()
         elif m := FTMS_EXIT.match(line):
-            self._exits.put(int(m.group(1)))
+            self._exits.put((int(m.group(1)), m.group(2) is not None))
 
     def _start_and_watch(self) -> str:
         self.worker = worker = WorkerProcess(self.commands["worker"], self.out, self._lock, self._on_line)
         # state: "off", "starting" (waiting for the ready line), "on", "stopping" (waiting for the exit line)
         state = "starting" if self._want_ftms else "off"
         deadline = time.monotonic() + self.t.port_wait_s
-        expected_exits = 0  # `ftms off` sent, exit line not seen yet: that line is requested, even if late
         began, announced = time.monotonic(), False
         while not self._stop.is_set():
             code = worker.poll()
@@ -117,9 +116,8 @@ class ServerSupervisor:
                 announced = True
                 self.post(("supervisor", "running"))
             while not self._exits.empty():
-                exit_code = self._exits.get()
-                if expected_exits:
-                    expected_exits -= 1
+                exit_code, requested = self._exits.get()
+                if requested:  # the worker says the task ended because of `ftms off`/`stop`
                     if state == "stopping":
                         self.post(("ftms", "off"))
                         state = "off"
@@ -135,10 +133,8 @@ class ServerSupervisor:
                 self._want_ftms, state = False, "off"
                 self.post(("ftms", f"stopped ({FTMS_NAME} did not start within {self.t.port_wait_s:g} s)"))
                 worker.send("ftms off")
-                expected_exits += 1
             elif state in ("starting", "on") and not self._want_ftms:
                 worker.send("ftms off")
-                expected_exits += 1
                 state, deadline = "stopping", time.monotonic() + self.t.grace_s
             elif state == "stopping" and time.monotonic() >= deadline:
                 self._say(f"FTMS did not stop within {self.t.grace_s:g} s")
