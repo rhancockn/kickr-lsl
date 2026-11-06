@@ -53,7 +53,8 @@ async def is_allowed(
         if ip is None:
             names.append(entry.lower())
     deadline = time.monotonic() + timeout_s
-    pending = {asyncio.ensure_future(resolve(name)) for name in names}
+    tasks = [asyncio.ensure_future(resolve(name)) for name in names]
+    pending = set(tasks)
     try:
         while pending:
             done, pending = await asyncio.wait(
@@ -65,12 +66,13 @@ async def is_allowed(
                 log.debug("Host lookup timed out for %d name(s)", len(pending))
                 return False
             for task in done:
-                try:
+                if not task.cancelled() and task.exception() is None:
                     if peer in {normalize_ip(a) for a in task.result()}:
                         return True
-                except Exception as exc:
-                    log.debug("Host lookup failed: %s", exc)
         return False
     finally:
-        for task in pending:
-            task.cancel()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+            elif not task.cancelled() and task.exception() is not None:
+                log.debug("Host lookup failed: %r", task.exception())

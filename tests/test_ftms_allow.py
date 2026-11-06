@@ -63,3 +63,24 @@ def test_normalize_ip():
     assert normalize_ip("::ffff:10.0.0.23") == "10.0.0.23"
     assert normalize_ip("fe80::1%eth0") == "fe80::1"
     assert normalize_ip("lab-pc") is None
+
+
+def test_failures_alongside_match_are_logged_not_leaked(caplog):
+    caplog.set_level("DEBUG", logger="wahoo_lsl.ftms.allow")
+    unretrieved = []
+
+    async def run():
+        asyncio.get_running_loop().set_exception_handler(
+            lambda loop, ctx: unretrieved.append(ctx)
+        )
+        names = ["lab-pc-3.lab.local", "bad", "bad", "bad", "bad"]
+        result = await is_allowed("10.0.0.23", names, fake_resolve)
+        await asyncio.sleep(0)
+        import gc
+
+        gc.collect()
+        return result
+
+    assert asyncio.run(run())
+    assert not unretrieved
+    assert sum("Host lookup failed" in r.message for r in caplog.records) == 4
