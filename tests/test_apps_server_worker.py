@@ -7,6 +7,7 @@ import json
 import logging
 import socket
 import threading
+import time
 import struct
 from types import SimpleNamespace
 
@@ -290,6 +291,78 @@ def test_unknown_command_warns(tmp_path, caplog):
 
     drive(tmp_path, caplog, scenario, ftms_enabled=False)
     assert [r.levelno for r in caplog.records if "dance" in r.getMessage()] == [logging.WARNING]
+
+
+def test_ftms_on_during_shutdown_is_not_dropped(tmp_path, caplog):
+    async def scenario(b, commands, task):
+        await wait(lambda: streaming(b))
+        await wait(lambda: count(caplog, READY) == 1)
+        commands.put_nowait("ftms off")
+        commands.put_nowait("ftms on")  # arrives while the first FTMS is still spinning down
+        await wait(lambda: count(caplog, READY) == 2)
+        commands.put_nowait("stop")
+
+    drive(tmp_path, caplog, scenario)
+    assert count(caplog, "ftms exited with code 0") == 2
+
+
+def test_last_of_on_off_wins(tmp_path, caplog):
+    async def scenario(b, commands, task):
+        await wait(lambda: count(caplog, READY) == 1)
+        for c in ("ftms off", "ftms on", "ftms off"):
+            commands.put_nowait(c)
+        await wait(lambda: count(caplog, "ftms exited with code 0") == 1)
+        await asyncio.sleep(0.2)
+        assert count(caplog, READY) == 1
+        commands.put_nowait("stop")
+
+    drive(tmp_path, caplog, scenario)
+
+
+def test_cps_close_does_not_block_the_loop(tmp_path, caplog, monkeypatch):
+    real_close = server_worker.Pipeline.close
+
+    def slow_close(self, timeout):
+        time.sleep(0.4)
+        return real_close(self, timeout=timeout)
+
+    monkeypatch.setattr(server_worker.Pipeline, "close", slow_close)
+    gaps = []
+
+    async def scenario(b, commands, task):
+        await wait(lambda: streaming(b))
+        loop = asyncio.get_running_loop()
+
+        async def ticker():
+            last = loop.time()
+            while True:
+                await asyncio.sleep(0.01)
+                gaps.append(loop.time() - last)
+                last = loop.time()
+
+        t = asyncio.create_task(ticker())
+        b.clients[0].drop()  # CPS reconnect disabled: CPS ends, closes its pipeline
+        await asyncio.wait_for(task, 10)
+        t.cancel()
+
+    drive(tmp_path, caplog, scenario)
+    assert max(gaps) < 0.2
+
+
+def test_ftms_stop_failure_still_stops_cps(tmp_path, caplog, monkeypatch):
+    async def boom(self):
+        raise RuntimeError("ftms stop failed")
+
+    monkeypatch.setattr(server_worker._Ftms, "stop", boom)
+
+    async def scenario(b, commands, task):
+        await wait(lambda: streaming(b))
+        commands.put_nowait("stop")
+
+    code, *_ = drive(tmp_path, caplog, scenario)
+    assert code == 0
+    assert count(caplog, "cps exited with code 0") == 1
+    assert any(r.levelno == logging.ERROR and "FTMS did not stop" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize(

@@ -114,7 +114,7 @@ async def run_cps(cfg: Config, backend: BleBackend, stop: asyncio.Event, debug: 
         code, reason = cli.EXIT_ERROR, "error"
     finally:
         pipeline.put(make_event("stopped", reason=reason))
-        if not pipeline.close(timeout=cli.CLOSE_TIMEOUT_S):
+        if not await asyncio.to_thread(pipeline.close, timeout=cli.CLOSE_TIMEOUT_S):
             cli.log.warning("Queue sizes at shutdown (items not yet processed): %s", pipeline.queue_sizes())
             if code == cli.EXIT_OK:
                 code = cli.EXIT_ERROR
@@ -123,21 +123,37 @@ async def run_cps(cfg: Config, backend: BleBackend, stop: asyncio.Event, debug: 
 
 
 class _Ftms:
-    """The FTMS service task and its own stop event."""
+    """The FTMS service task and its own stop event; the last of ``on``/``off`` wins."""
 
     def __init__(self, cfg: FtmsConfig, backend: BleBackend) -> None:
         self._cfg, self._backend = cfg, backend
         self.task: asyncio.Task | None = None
         self._stop = asyncio.Event()
+        self._restart = False  # `on` arrived while the previous task was still stopping
+        self._closed = False
 
     @property
     def running(self) -> bool:
         return self.task is not None and not self.task.done()
 
-    def start(self) -> None:
+    def on(self) -> None:
+        if self._closed:
+            return
         if not self.running:
             self._stop = asyncio.Event()
             self.task = asyncio.ensure_future(self._run(self._stop))
+            self.task.add_done_callback(self._finished)
+        elif self._stop.is_set():
+            self._restart = True
+
+    def off(self) -> None:
+        self._restart = False
+        self._stop.set()
+
+    def _finished(self, _task: asyncio.Task) -> None:
+        if self._restart:
+            self._restart = False
+            self.on()
 
     async def _run(self, stop: asyncio.Event) -> int:
         code = cli.EXIT_ERROR
@@ -151,8 +167,9 @@ class _Ftms:
 
     async def stop(self) -> None:
         """Stop and wait, so ``controller.close`` has spun the trainer down to 0 W."""
+        self._closed = True
+        self.off()
         if self.task is not None:
-            self._stop.set()
             await asyncio.shield(self.task)
 
 
@@ -184,7 +201,7 @@ async def run_server(
     ftms_logger.addHandler(ready)
     try:
         if ftms_enabled:
-            ftms.start()
+            ftms.on()
             ftms.task.add_done_callback(lambda _t: start_cps())  # FTMS ended before it was ready
         else:
             start_cps()
@@ -200,18 +217,21 @@ async def run_server(
                 if command in (None, "stop"):
                     break
                 if command == "ftms on":
-                    ftms.start()
+                    ftms.on()
                 elif command == "ftms off":
-                    if ftms.running:
-                        ftms._stop.set()
+                    ftms.off()
                 else:
                     log.warning("unknown command %r", command)
         finally:
             get.cancel()
             done_wait.cancel()
         stopping = True
-        await ftms.stop()
-        stop_cps.set()
+        try:
+            await ftms.stop()
+        except Exception:
+            log.exception("FTMS did not stop cleanly")
+        finally:
+            stop_cps.set()
         code = await cps_task if cps_task is not None else cli.EXIT_OK
         log.info("cps exited with code %d", code)
         return code
