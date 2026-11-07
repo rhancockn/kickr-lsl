@@ -119,7 +119,6 @@ class ControlServer:
             return
         self._active = writer
         log.info("Client connected: %s", peer)
-        spun_down = False  # set by an explicit disconnect so the finally path does not repeat it
         try:
             while True:
                 try:
@@ -131,10 +130,10 @@ class ControlServer:
                     break  # EOF
                 if not line.strip():
                     continue
-                reply, spun_down = await self._dispatch(line, writer)
+                reply, done = self._dispatch(line, writer)
                 await _send(writer, reply)
-                if spun_down:
-                    break
+                if done:
+                    break  # disconnect: the reply is out; the finally block spins down, as for EOF
         except ConnectionError as e:
             log.info("Client %s connection error: %s", peer, e)
         except Exception:
@@ -145,7 +144,7 @@ class ControlServer:
             log.info("Client disconnected: %s", peer)
             # Spin down before awaiting wait_closed: Controller.spin_down zeroes requested_w
             # before its first await, so a reconnecting client's later set always wins.
-            if not self._closing and not spun_down:
+            if not self._closing:
                 self._controller.reset_slew()  # the rate belongs to the client that set it
                 await self._controller.spin_down("client disconnected")
             with suppress(ConnectionError):
@@ -158,16 +157,13 @@ class ControlServer:
             self._refusal_warned[ip] = now
         log.log(logging.DEBUG if quiet else logging.WARNING, "Refusing %s: not in allowed_hosts", ip or "unknown peer")
 
-    async def _dispatch(self, line: bytes, writer: asyncio.StreamWriter) -> tuple[dict[str, Any], bool]:
-        """The reply, and whether this was a disconnect (spun down: the connection ends)."""
-        reply = self._dispatch_sync(line, writer)
-        if reply is not None:
-            return reply, False
-        self._controller.reset_slew()
-        return {"ok": True, "spun_down": await self._controller.spin_down("client disconnect")}, True
+    def _dispatch(self, line: bytes, writer: asyncio.StreamWriter) -> tuple[dict[str, Any], bool]:
+        """The reply, and whether this was a disconnect (the connection ends after the reply)."""
+        reply = self._reply(line, writer)
+        return ({"ok": True}, True) if reply is None else (reply, False)
 
-    def _dispatch_sync(self, line: bytes, writer: asyncio.StreamWriter) -> dict[str, Any] | None:
-        """Every command except disconnect (returns None: it needs awaits)."""
+    def _reply(self, line: bytes, writer: asyncio.StreamWriter) -> dict[str, Any] | None:
+        """The reply to one request line; None for disconnect, which the caller answers."""
         try:
             request = json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError):

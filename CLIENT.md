@@ -26,7 +26,7 @@ reads status. The full reference is the "Wire protocol" section of `README.md`.
 | `{"cmd":"set","watts":150}` | `target_w` (after the `max_watts` limit), `clamped`. It returns before the trainer confirms. |
 | `{"cmd":"slew","w_per_s":20}` | `slew_w_per_s`. Increases ramp at this rate; 0 = immediate. Decreases are always immediate. It lasts until you disconnect. |
 | `{"cmd":"read"}` | `link`, `link_epoch`, `target{requested_w, confirmed_w, pending, setpoint_w, ramp_end_t_lsl, t_lsl}`, `power{watts, t_lsl, age_s}`, `last_error`, `slew{w_per_s, update_interval_s}` |
-| `{"cmd":"disconnect"}` | `spun_down` (true if the trainer confirmed 0 W). The server then closes the connection. |
+| `{"cmd":"disconnect"}` | Nothing extra. The server replies at once, closes the connection, then spins the trainer down to 0 W. |
 
 `t_lsl` values are LSL clock times (`pylsl.local_clock()`) on the server PC.
 
@@ -58,13 +58,12 @@ with KickrClient("server-pc.lab.local", 47610) as k:   # raises KickrError("not_
     k.set_target_power(150)                            # returns the accepted target
     print(k.read_power())                              # PowerReading(watts, t_lsl, age_s)
     print(k.read_target_power())                       # TargetState(requested_w, confirmed_w, ...)
-    print("at 0 W:", k.disconnect())                   # optional; leaving the block also spins down
+    k.disconnect()                                     # optional; returns at once, the server spins down
 ```
 
 ## MATLAB
 
-This uses `tcpclient` and needs no toolbox. The timeout must cover `disconnect`, which waits up to
-2 s for the trainer.
+This uses `tcpclient` and needs no toolbox.
 
 ```matlab
 t = tcpclient("server-pc.lab.local", 47610, "Timeout", 3);   % line terminator defaults to LF
@@ -74,7 +73,7 @@ fprintf("connected as %s, link %s\n", r.peer, r.link);
 kickr(t, struct("cmd", "slew", "w_per_s", 20));
 r = kickr(t, struct("cmd", "set", "watts", 150));             % r.target_w, r.clamped
 s = kickr(t, struct("cmd", "read"));                          % s.power.watts, s.target.confirmed_w
-r = kickr(t, struct("cmd", "disconnect"));                    % r.spun_down
+r = kickr(t, struct("cmd", "disconnect"));                    % optional; the server spins down
 clear t                                                        % closing also spins down
 
 function r = kickr(t, request)                                 % one request -> one reply
@@ -95,7 +94,7 @@ Calls block for a network round trip, so run them off the main thread, for examp
 using System; using System.IO; using System.Net.Sockets; using UnityEngine;
 
 [Serializable] public class Reply { public bool ok; public string error, detail, peer, link;
-                                     public int link_epoch, target_w; public bool spun_down; }
+                                     public int link_epoch, target_w; }
 
 public sealed class KickrLink : IDisposable {
     readonly TcpClient tcp; readonly StreamReader rd; readonly StreamWriter wr;
@@ -116,7 +115,7 @@ public sealed class KickrLink : IDisposable {
     }
 
     public int SetWatts(int w) => Send($"{{\"cmd\":\"set\",\"watts\":{w}}}").target_w;
-    public bool Disconnect() { var ok = Send("{\"cmd\":\"disconnect\"}").spun_down; Dispose(); return ok; }
+    public void Disconnect() { Send("{\"cmd\":\"disconnect\"}"); Dispose(); }
     public void Dispose() => tcp.Dispose();                  // closing also spins down
 }
 ```

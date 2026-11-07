@@ -4,8 +4,8 @@ Each call is one localhost round trip (well under a millisecond); BLE latency is
 the service. Use one KickrClient per process (the service accepts a single client); it is
 not thread-safe. Any failure mid-call (timeout, interrupt, malformed reply) closes the client:
 later calls raise ConnectionError without sending. Closing the client (or the process
-exiting) makes the service spin the trainer down to 0 W; disconnect() does the same and reports
-whether it was confirmed. The constructor sends `connect`, so a refused client (not_allowed, busy)
+exiting) makes the service spin the trainer down to 0 W; disconnect() does the same, returning at
+once (the service spins down after it has replied). The constructor sends `connect`, so a refused client (not_allowed, busy)
 raises KickrError straight away; `peer` is the address the service sees.
 The slew rate set with set_slew_rate also resets to the service default when the client disconnects.
 """
@@ -19,11 +19,6 @@ import socket
 from typing import Any, NamedTuple
 
 from . import DEFAULT_HOST, DEFAULT_PORT
-
-# Copy of controller.SPIN_DOWN_TIMEOUT_S: importing the controller would pull in bleak/pylsl, and this
-# module is standard library only. A test keeps the two equal.
-SPIN_DOWN_TIMEOUT_S = 2.0
-
 
 class KickrError(Exception):
     """The service answered ok:false."""
@@ -126,16 +121,15 @@ class KickrClient:
         self.peer, self.link, self.link_epoch = info
         return info
 
-    def disconnect(self) -> bool:
-        """Spin the trainer down to 0 W, wait for it and close; True if the spin-down was confirmed.
+    def disconnect(self) -> None:
+        """Tell the service we are done and close; it replies at once and spins the trainer down to 0 W.
 
-        Closing without this also spins down, but cannot report the outcome. After it, close() is a no-op.
+        Equivalent to close(), but confirms the service got the message. After it, close() is a no-op.
         """
         if self._closed:
             raise ConnectionError("client is closed")
-        self._sock.settimeout(max(self._timeout_s, SPIN_DOWN_TIMEOUT_S + 1))
         try:
-            return self._request({"cmd": "disconnect"}, lambda r: bool(r["spun_down"]))
+            self._request({"cmd": "disconnect"}, lambda r: None)
         finally:
             self.close()
 

@@ -254,36 +254,13 @@ def test_connect_rechecks_and_updates_fields():
         assert len(svc.connects) == 2
 
 
-def test_disconnect_returns_flag_and_closes():
-    def reply(request):
-        return {"ok": True, "spun_down": False} if request["cmd"] == "disconnect" else default_reply(request)
-
-    with StubService(reply) as svc:
+def test_disconnect_returns_none_and_closes():
+    with StubService(default_reply) as svc:
         with KickrClient(port=svc.port) as client:
-            assert client.disconnect() is False
+            assert client.disconnect() is None
             assert svc.requests == [{"cmd": "disconnect"}]
             wait_for(lambda: svc.disconnects == 1)
             client.close()  # no-ops after disconnect
             with pytest.raises(ConnectionError):
                 client.read()
         assert svc.disconnects == 1
-
-
-def test_disconnect_true_flag():
-    with StubService(lambda r: {"ok": True, "spun_down": True}) as svc, KickrClient(port=svc.port) as client:
-        assert client.disconnect() is True
-
-
-def test_disconnect_waits_longer_than_the_normal_timeout():
-    def slow(request):
-        time.sleep(0.4)  # longer than the 0.2 s request timeout
-        return {"ok": True, "spun_down": True}
-
-    with StubService(slow) as svc, KickrClient(port=svc.port, timeout_s=0.2) as client:
-        assert client.disconnect() is True
-
-
-def test_client_spin_down_timeout_matches_controller():
-    from wahoo_lsl.ftms import client, controller
-
-    assert client.SPIN_DOWN_TIMEOUT_S == controller.SPIN_DOWN_TIMEOUT_S

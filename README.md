@@ -178,7 +178,7 @@ with KickrClient() as kickr:            # 127.0.0.1:47610; sends connect, raises
     kickr.set_slew_rate(20)             # W/s for this connection; 0 = immediate
     print(kickr.read_target_power())    # TargetState(requested_w, confirmed_w, pending, t_lsl; also setpoint_w, ramp_end_t_lsl)
     print(kickr.read_power())           # PowerReading(watts, t_lsl, age_s)
-    kickr.disconnect()                  # optional: spin down to 0 W, wait for it, close; returns True if confirmed
+    kickr.disconnect()                  # optional: close at once; the server spins down to 0 W
 # leaving the block without disconnect() also spins down to 0 W
 ```
 
@@ -220,9 +220,9 @@ Remote PCs use `KickrClient("server-pc.lab.local", 47610)` or a plain socket.
   changes nothing, safe to repeat. `peer` is the address the server sees and checks against
   `ftms.allowed_hosts`, so use it to confirm which address of this machine is being used. A refused
   client gets `busy` or `not_allowed` as the reply instead.
-- `{"cmd":"disconnect"}` -> `{"ok":true,"spun_down":true}`, then the server closes the connection.
-  It sets the trainer to 0 W (waiting up to 2 s for the trainer) and resets your slew rate;
-  `spun_down` is false if the trainer did not confirm 0 W (for example the link is down).
+- `{"cmd":"disconnect"}` -> `{"ok":true}`, then the server closes the connection. The reply does
+  not wait for the trainer: the server then sets it to 0 W and resets your slew rate, exactly as
+  when the connection simply closes.
 - `{"cmd":"set","watts":150}` -> `{"ok":true,"target_w":150,"clamped":false}` (non-negative integer;
   clamped to `max_watts`; returns before the trainer confirms).
 - `{"cmd":"slew","w_per_s":20}` -> `{"ok":true,"slew_w_per_s":20.0}` (0..1000, 0 = immediate; applies to
