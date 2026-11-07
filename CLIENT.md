@@ -85,6 +85,26 @@ end
 
 Put `kickr` at the end of the script, or in its own `kickr.m` file.
 
+`tcpclient` cannot turn off Nagle's algorithm. One request per round trip is unaffected. If you
+want it off anyway, MATLAB's Java socket can do it (Java support is on by default in the
+desktop):
+
+```matlab
+s = java.net.Socket('server-pc.lab.local', 47610);
+s.setTcpNoDelay(true); s.setSoTimeout(3000);                    % Nagle off; 3 s read timeout
+in  = java.io.BufferedReader(java.io.InputStreamReader(s.getInputStream(), 'UTF-8'));
+out = java.io.PrintWriter(java.io.OutputStreamWriter(s.getOutputStream(), 'UTF-8'));
+r = kickrj(in, out, struct("cmd", "connect"));
+% ... same commands as above ...
+s.close();                                                      % closing also spins down
+
+function r = kickrj(in, out, request)                           % one request -> one reply
+    out.print([jsonencode(request) newline]); out.flush();
+    r = jsondecode(char(in.readLine()));
+    if ~r.ok, error("FTMS %s: %s", r.error, r.detail); end
+end
+```
+
 ## Unity (C#)
 
 Calls block for a network round trip, so run them off the main thread, for example with
@@ -100,7 +120,7 @@ public sealed class KickrLink : IDisposable {
     readonly TcpClient tcp; readonly StreamReader rd; readonly StreamWriter wr;
 
     public KickrLink(string host, int port = 47610) {
-        tcp = new TcpClient(host, port) { ReceiveTimeout = 3000, SendTimeout = 3000 };
+        tcp = new TcpClient(host, port) { NoDelay = true, ReceiveTimeout = 3000, SendTimeout = 3000 };
         var s = tcp.GetStream();
         rd = new StreamReader(s); wr = new StreamWriter(s) { AutoFlush = true, NewLine = "\n" };
         var r = Send("{\"cmd\":\"connect\"}");                // throws on not_allowed / busy

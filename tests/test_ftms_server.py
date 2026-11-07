@@ -426,12 +426,15 @@ def test_disconnect_reply_arrives_before_spin_down_completes():
         assert await ask(r1, w1, {"cmd": "disconnect"}) == {"ok": True}  # spin_down still pending
         assert await r1.readline() == b""
         await until(lambda: "spin_down" in ctl.calls)
+        r2, w2 = await asyncio.open_connection("127.0.0.1", server.port)  # not busy during the spin-down
+        assert (await ask(r2, w2, {"cmd": "read"}))["ok"] is True
         gate.set()
-        await until(lambda: server._active is None)
+        w2.close()
+        await until(lambda: server._active is None and ctl.calls.count("spin_down") == 2)
         await server.close()
 
     run(scenario)
-    assert ctl.calls == ["reset_slew", "spin_down"]
+    assert ctl.calls == ["reset_slew", "spin_down"] * 2
 
 
 def test_eof_without_disconnect_spins_down_once():
