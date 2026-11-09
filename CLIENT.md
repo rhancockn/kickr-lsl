@@ -52,14 +52,17 @@ again.
 ```python
 from wahoo_lsl.ftms.client import KickrClient, KickrError
 
-with KickrClient("server-pc.lab.local", 47610) as k:   # raises KickrError("not_allowed" / "busy")
-    print("connected as", k.peer, "link", k.link)
-    k.set_slew_rate(20)                                # W/s for increases; 0 = immediate
-    k.set_target_power(150)                            # returns the accepted target
-    print(k.read_power())                              # PowerReading(watts, t_lsl, age_s)
-    print(k.read_target_power())                       # TargetState(requested_w, confirmed_w, ...)
-    k.disconnect()                                     # optional; returns at once, the server spins down
+k = KickrClient("server-pc.lab.local", 47610)      # raises KickrError("not_allowed" / "busy")
+print("connected as", k.peer, "link", k.link)
+k.set_slew_rate(20)                                # W/s for increases; 0 = immediate
+k.set_target_power(150)                            # returns the accepted target
+print(k.read_power())                              # PowerReading(watts, t_lsl, age_s)
+print(k.read_target_power())                       # TargetState(requested_w, confirmed_w, ...)
+k.disconnect()                                     # returns at once; the server spins down
 ```
+
+`k.close()` does the same as `disconnect()`. If the program exits or crashes without either,
+the connection closes and the server still spins down.
 
 ## MATLAB
 
