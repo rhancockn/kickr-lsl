@@ -1,4 +1,4 @@
-"""FTMS controller (spec §7.4–7.7, slew spec): target state, slewed rate-limited sender, spin-down, reconnect.
+"""FTMS controller: target state, slewed rate-limited sender, spin-down, reconnect.
 
 All methods run on the event loop; link callbacks also arrive there, so no locks are needed.
 """
@@ -97,7 +97,7 @@ class Controller:
     # ---- lifecycle -------------------------------------------------------------
 
     async def start(self) -> None:
-        """First connection (spec §7.3). Raises BleSetupError; starts the sender on success."""
+        """First connection. Raises BleSetupError; starts the sender on success."""
         await self._link.open()
         self._mark_ready()
         self._sender_task = asyncio.create_task(self._sender(), name="ftms-sender")

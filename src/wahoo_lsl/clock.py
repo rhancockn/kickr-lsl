@@ -1,4 +1,4 @@
-"""The only module that reads clocks (spec §4).
+"""The only module that reads clocks.
 
 t_lsl  = pylsl.local_clock(): liblsl monotonic steady clock, seconds. Sole timing reference.
 t_wall = time.time_ns(): system realtime clock (UTC). Human reference only; may jump.

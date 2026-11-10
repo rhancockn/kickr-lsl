@@ -1,4 +1,4 @@
-"""Pure FTMS codec (spec §5): UUIDs, control-point encoders, decoders. No I/O."""
+"""Pure FTMS codec: UUIDs, control-point encoders, decoders. No I/O."""
 from __future__ import annotations
 
 import struct
@@ -153,7 +153,7 @@ def parse_status(data: bytes | bytearray) -> StatusEvent:
 
 
 def parse_bike_data(data: bytes | bytearray) -> BikeData:
-    """Walk Indoor Bike Data fields in spec order up to instantaneous power (spec §5.5)."""
+    """Walk Indoor Bike Data fields in spec order up to instantaneous power."""
     data = bytes(data)
     if len(data) < 2:
         raise ProtocolError(f"Indoor Bike Data needs at least 2 bytes, got {len(data)}")

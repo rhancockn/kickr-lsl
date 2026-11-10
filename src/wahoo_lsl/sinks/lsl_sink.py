@@ -1,4 +1,4 @@
-"""LSL outlet sink: the regular CPS stream (spec: CPS LSL outlet design).
+"""LSL outlet sink: the regular CPS stream.
 
 Runs on its own SinkRunner thread; each drained queue batch becomes one push_chunk.
 The outlet is created when the device's features are known and kept across BLE

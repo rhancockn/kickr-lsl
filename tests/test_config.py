@@ -44,7 +44,7 @@ def _delete(key: str):
 def test_example_config_loads():
     cfg = load_config(EXAMPLE)
     assert cfg.device == DeviceConfig(name="KICKR", mac=None, uuid=None, scan_timeout_s=10.0)
-    assert cfg.measurements == ("power", "wheel_revolutions", "accumulated_torque")
+    assert cfg.measurements == ("power", "wheel_revolutions", "accumulated_torque", "crank_revolutions")
     assert cfg.log.path == "logs/cps_{start:%Y%m%d_%H%M%S}.jsonl"
     assert cfg.log.flush_every_n == 10
     assert cfg.reconnect.enabled is True

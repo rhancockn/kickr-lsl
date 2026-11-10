@@ -4,3 +4,8 @@ __pycache__/
 build/
 logs/
 .DS_Store
+.superpowers/
+# local configs (copy from *.example.json)
+/config.json
+/config.json~
+/ftms.json

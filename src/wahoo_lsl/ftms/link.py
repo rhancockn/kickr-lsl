@@ -1,4 +1,4 @@
-"""FTMS BLE link (spec §7.2–7.3): own connection, control-point commands, notifications.
+"""FTMS BLE link: own connection, control-point commands, notifications.
 
 The only ftms module that touches bleak; discovery and bounded shutdown come from ble.py.
 """
@@ -73,7 +73,7 @@ class FtmsLink:
     # ---- setup ---------------------------------------------------------------
 
     async def open(self) -> None:
-        """Connect, check features, subscribe, take control, start, set 0 W (spec §7.3 steps 1–4).
+        """Connect, check features, subscribe, take control, start, set 0 W.
 
         Raises BleSetupError (FtmsSetupError for FTMS-specific failures); leaves nothing connected.
         """

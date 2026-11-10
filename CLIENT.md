@@ -2,14 +2,14 @@
 
 The FTMS service (`wahoo-ftms serve`, or Wahoo Server) holds a Wahoo KICKR in ERG mode and
 accepts one client at a time over TCP. A client sets the target power, the ramp rate, and
-reads status. The full reference is the "Wire protocol" section of `README.md`.
+reads status.
 
 ## Connecting
 
 - Address: `127.0.0.1:47610` on the server PC. From another lab PC, use `<server-pc>:47610`; that
   PC must be listed in the service's `ftms.allowed_hosts` (see `README.md`, "Remote clients").
 - Protocol: plain TCP, UTF-8, one JSON object per line ending in `\n`. Each request gets exactly
-  one reply line. The server sends nothing until you send a request.
+  one reply line. Request lines are limited to 4096 bytes. The server sends nothing until you send a request.
 - Sequence:
   1. Open the socket.
   2. Send `connect` to check you are accepted.
@@ -25,7 +25,7 @@ reads status. The full reference is the "Wire protocol" section of `README.md`.
 | `{"cmd":"connect"}` | `peer` (your address as the server sees it), `link` (`ready`, `reconnecting` or `closed`), `link_epoch` |
 | `{"cmd":"set","watts":150}` | `target_w` (after the `max_watts` limit), `clamped`. It returns before the trainer confirms. |
 | `{"cmd":"slew","w_per_s":20}` | `slew_w_per_s`. Increases ramp at this rate; 0 = immediate. Decreases are always immediate. It lasts until you disconnect. |
-| `{"cmd":"read"}` | `link`, `link_epoch`, `target{requested_w, confirmed_w, pending, setpoint_w, ramp_end_t_lsl, t_lsl}`, `power{watts, t_lsl, age_s}`, `last_error`, `slew{w_per_s, update_interval_s}` |
+| `{"cmd":"read"}` | `link`, `link_epoch`, `target{requested_w, confirmed_w, pending, setpoint_w, ramp_end_t_lsl, t_lsl}`, `power{watts, t_lsl, age_s}`, `last_error`, `last_error_t_lsl`, `slew{w_per_s, update_interval_s}` |
 | `{"cmd":"disconnect"}` | Nothing extra. The server replies at once, closes the connection, then spins the trainer down to 0 W. |
 
 `t_lsl` values are LSL clock times (`pylsl.local_clock()`) on the server PC.
@@ -40,6 +40,9 @@ An error reply is `{"ok": false, "error": "<code>", "detail": "<text>"}`.
 | `busy` | Another client is connected. | closed |
 | `link_down` | The trainer is reconnecting; retry the command. | open |
 | `invalid_watts` / `invalid_slew` / `bad_request` | Bad request. | open, except a request over 4096 bytes |
+
+`busy` and `not_allowed` are sent as soon as the connection is accepted (for a remote PC, within
+about 1.5 s) and arrive as the reply to your first request.
 
 When `link_epoch` increases, the trainer has reconnected and is back at 0 W: send your target
 again.

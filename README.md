@@ -1,10 +1,20 @@
 # wahoo-lsl
 
-Stream and log Bluetooth LE Cycling Power Service (CPS) data from a Wahoo KICKR (tested target: KICKR V6).
-Runs on macOS, Windows and Linux. Every CP Measurement notification is timestamped on arrival,
-parsed, and written as one line of JSONL. Lab Streaming Layer output is planned.
+Tools for using a Wahoo KICKR smart trainer in lab experiments (tested on a KICKR V6). They run on
+macOS, Windows and Linux.
 
-Design: `docs/superpowers/specs/2026-10-20-wahoo-cps-logger-design.md`.
+- **`wahoo-lsl`** reads power, speed and cadence from the trainer's Bluetooth Cycling Power
+  Service (CPS), logs every measurement to JSONL and publishes it as a Lab Streaming Layer (LSL)
+  stream.
+- **`wahoo-ftms`** is a service that controls the trainer's resistance (ERG mode) over Bluetooth
+  FTMS. Experiment code in Python, MATLAB, Unity or anything else that can open a TCP socket sets
+  the target power through it; see [CLIENT.md](CLIENT.md).
+- **`wahoo-dashboard`** is a small window for testing both by hand.
+- **Windows apps:** Wahoo Server and Wahoo Dashboard, with an installer; see
+  [docs/windows-apps.md](docs/windows-apps.md).
+
+This project is not affiliated with or endorsed by Wahoo Fitness. Wahoo and KICKR are trademarks of
+their owner.
 
 ## Install
 
@@ -117,23 +127,11 @@ while True:
 conda run -n wahoo python -m pytest
 ```
 
-## Manual hardware checklist
-
-Run on each platform (macOS, Windows, Linux) with the same config, filling in only `uuid` (macOS) or `mac` (Windows/Linux):
-
-1. `scan` lists the KICKR with `cps yes`.
-2. `list-features` shows the device, sensor location, feature bits, and marks configured measurements available/UNAVAILABLE.
-3. `run` for 2 minutes while pedalling: samples at the device rate, `seq` contiguous, `t_lsl` increasing.
-4. Power-cycle the KICKR mid-run: a "Connection ... lost" warning, `disconnected` → `reconnect_attempt` → `connected` → `reconnected` events in the log, `seq` continues.
-5. Ctrl-C (in an activated `wahoo` shell, not via `conda run`): clean exit (code 0, check with `echo $?`), last line of the log is a `stopped` event.
-6. `run --debug`: each sample printed to stdout.
-7. `list-features` prints the Device Information fields (model number etc.); `run` logs "LSL outlet KICKR…-CPS-…" and the resolver snippet under "LSL stream" shows live samples.
-
 ## FTMS power control (`wahoo-ftms`)
 
 A separate service that takes FTMS control of the trainer and holds ERG targets requested by
-one local client. It uses its own BLE connection, so it can run on a different machine from
-the CPS logger (or alongside it). Design: `docs/superpowers/specs/2026-10-21-kickr-ftms-control-design.md`.
+one client. It uses its own BLE connection, so it can run on a different machine from
+the CPS logger (or alongside it).
 
 ```bash
 cp ftms.example.json ftms.json          # edit device name / mac / uuid as for config.json
@@ -156,7 +154,7 @@ each step: 100 → 250 W sends 200 W after 10 s and 250 W after 15 s; a change s
 interval's worth is sent once, when its ramp ends. While a ramp runs, updates go out every
 `slew_update_interval_s`; a new target or rate change mid-ramp continues from the current setpoint
 without postponing the next update. `max_rate_hz` still limits how often anything is sent. Set `"slew_w_per_s": 0` in
-`ftms.json` (or call `set_slew_rate(0)`) for the old behaviour: each target goes straight to the
+`ftms.json` (or call `set_slew_rate(0)`) so that each target goes straight to the
 trainer. A client's rate lasts until it disconnects. Disconnects, BLE drops and shutdown always go to
 0 W immediately, without a ramp. A decrease sent mid-ramp cancels the ramp.
 
@@ -194,60 +192,23 @@ list them (DNS names or IP literals, case-insensitive) in `ftms.json`:
 With a non-empty `allowed_hosts` the service listens on `ftms.listen_host` (default `"0.0.0.0"`; set
 it to one interface's IPv4 address to limit it) and accepts loopback plus the listed machines; anyone
 else gets `not_allowed` and is closed. `ftms.host` must stay `127.0.0.1` in this mode, and
-`listen_host` needs `allowed_hosts`. Names are re-resolved as connections arrive (results cached for 2 s, check limited to 1.5 s); ranges such as `10.0.0.0/24` are not supported. Accepted
-risk: the check is by source address only, with no authentication, so anyone who can spoof or share a
+`listen_host` needs `allowed_hosts`. Names are re-resolved as connections arrive (results cached for 2 s, check limited to 1.5 s); ranges such as `10.0.0.0/24` are not supported. Security:
+the check is by source address only, with no authentication, so anyone who can spoof or share a
 listed address can set trainer power. Local tools must dial `127.0.0.1`: the PC's own LAN address is
 refused unless it is listed. Firewall: Windows installs already open the port on the private profile;
 macOS and Linux may prompt or need a rule for the port.
 
-Manual check: from an unlisted PC, a request should be answered with `not_allowed`; on Windows the
-refused client may instead see a connection reset before it can read that line. On macOS two `serve`
-instances (one local-only, one remote) may both bind (`0.0.0.0` and `127.0.0.1`), so run only one.
+On Windows a refused client may see a connection reset instead of the `not_allowed` line. On macOS
+a local-only and a remote `serve` can both bind the same port (`127.0.0.1` and `0.0.0.0`), so run
+only one.
 
 Remote PCs use `KickrClient("server-pc.lab.local", 47610)` or a plain socket.
 
-### Wire protocol (plain-socket clients)
+### Client protocol
 
-- TCP, UTF-8, one JSON object per line (`\n`), requests and replies alternate. Request lines are
-  limited to 4096 bytes. One client at a time; the trainer returns to 0 W when it disconnects.
-- Recommended sequence: open the socket, send `connect`, send commands, then `disconnect`
-  (optional: closing the connection also spins the trainer down).
-- An accepted client receives nothing until it sends a request. If the connection is refused, the
-  server sends one error line, `busy` (another client is connected) or `not_allowed` (your address is
-  not in `ftms.allowed_hosts`), and closes. It arrives as the reply to your first request, or
-  immediately (within about 1.5 s) if you read first; if you read first, use a short timeout.
-- `{"cmd":"connect"}` -> `{"ok":true,"peer":"10.0.0.23","link":"ready","link_epoch":1}`: optional,
-  changes nothing, safe to repeat. `peer` is the address the server sees and checks against
-  `ftms.allowed_hosts`, so use it to confirm which address of this machine is being used. A refused
-  client gets `busy` or `not_allowed` as the reply instead.
-- `{"cmd":"disconnect"}` -> `{"ok":true}`, then the server closes the connection. The reply does
-  not wait for the trainer: the server then sets it to 0 W and resets your slew rate, exactly as
-  when the connection simply closes.
-- `{"cmd":"set","watts":150}` -> `{"ok":true,"target_w":150,"clamped":false}` (non-negative integer;
-  clamped to `max_watts`; returns before the trainer confirms).
-- `{"cmd":"slew","w_per_s":20}` -> `{"ok":true,"slew_w_per_s":20.0}` (0..1000, 0 = immediate; applies to
-  increases and lasts until you disconnect).
-- `{"cmd":"read"}` -> `{"ok":true,"link":"ready","link_epoch":1,"target":{...},"power":{...},...}`:
-  - `link`, `link_epoch`: BLE link state and a counter that increases after each reconnect.
-  - `target`: `requested_w`, `confirmed_w`, `pending`, `t_lsl`, `setpoint_w`, `ramp_end_t_lsl`.
-  - `power`: `watts`, `t_lsl`, `age_s` (null until the first notification).
-  - `last_error`, `last_error_t_lsl`; `slew`: `w_per_s`, `update_interval_s`.
-- Errors: `{"ok":false,"error":CODE,"detail":"..."}` with CODE one of
-  `bad_request|invalid_watts|invalid_slew|link_down|busy|not_allowed`.
-
-### Manual hardware checklist (FTMS)
-
-1. `wahoo-ftms serve -c ftms.json --debug`: log shows request_control, start_or_resume and set 0 W each answered with success.
-2. `wahoo-ftms read`: `link=ready epoch=1 target=0 W` and power updating about once per second while pedalling.
-3. `wahoo-ftms set 100 --slew 0 --hold 10` while pedalling: resistance rises within ~2 s; after the hold the trainer returns to 0 W.
-4. Run a Python client that sets 150 W, then kill it (`kill -9`): the trainer returns to 0 W.
-5. Switch the trainer off for ~10 s mid-session: warnings, reconnect, `epoch=2`, target 0 W.
-6. Open the Wahoo app or Zwift and let it take control: "control permission lost" warning, reconnect, 0 W.
-7. Run `wahoo-lsl run -c config.json` at the same time: both connect and work (the KICKR accepts multiple BLE centrals).
-8. Ctrl-C the service while holding a target: "spin-down (shutdown): 0 W confirmed", exit 0.
-9. With the default slew: `wahoo-ftms set 250 --hold 20` from 100 W while pedalling: `--debug` service log shows 200 W at ~+10 s and 250 W at ~+15 s.
-10. `"slew_w_per_s": 0` in ftms.json: `wahoo-ftms set 150` is applied within ~2 s as before.
-11. With the default slew: `wahoo-ftms set 100 --hold 20` from 250 W: the decrease is sent at once (no ramp).
+The service speaks newline-delimited JSON over TCP, so any language can be a client.
+[CLIENT.md](CLIENT.md) documents the commands, replies and errors, with examples for Python,
+MATLAB and Unity.
 
 ## Test dashboard (`wahoo-dashboard`)
 
@@ -275,9 +236,6 @@ The **Slew W/s** box sets the FTMS slew rate for the dashboard's connection (App
 starts at the FTMS config's `slew_w_per_s` (override with `wahoo-dashboard --slew W_PER_S`)
 and is re-sent whenever the dashboard reconnects. Moving the slider up ramps at
 that rate; moving it down and the 0 W button are immediate; closing the dashboard (or stopping `wahoo-dashboard`) drops to 0 W immediately.
-Check: with slew 10 W/s, move the slider from 100 to 250 W: the target panel shows
-`setpoint` and `ramp N s`, and the confirmed-target graph steps at ~10 s and ~15 s.
-
 To open only the window against a service and logger that are already running:
 
 ```bash

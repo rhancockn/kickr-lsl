@@ -1,4 +1,4 @@
-"""Python client for the FTMS control service (spec §9.1). Standard library only.
+"""Python client for the FTMS control service. Standard library only.
 
 Each call is one localhost round trip (well under a millisecond); BLE latency is hidden by
 the service. Use one KickrClient per process (the service accepts a single client); it is
