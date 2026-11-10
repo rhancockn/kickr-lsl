@@ -5,7 +5,7 @@
     "uuid": null,
     "scan_timeout_s": 10
   },
-  "measurements": ["power", "wheel_revolutions", "accumulated_torque"],
+    "measurements": ["power", "wheel_revolutions", "accumulated_torque", "crank_revolutions"],
   "log": {
     "path": "logs/cps_{start:%Y%m%d_%H%M%S}.jsonl",
     "flush_every_n": 10
