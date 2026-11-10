@@ -1,4 +1,4 @@
-"""Wahoo Server supervisor: drives the one `wahoo-worker server` process (FTMS service + CPS logger).
+"""Trainer Server supervisor: drives the one `wahoo-worker server` process (FTMS service + CPS logger).
 
 The worker shares one BLE connection between both services and takes `ftms on`, `ftms off` and
 `stop` on stdin. One instance runs one session (start ... stop); the window builds a new one to

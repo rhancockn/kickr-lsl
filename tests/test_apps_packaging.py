@@ -7,8 +7,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PKG = ROOT / "packaging" / "windows"
 ENTRIES = {
-    "wahoo_server.py": "wahoo_lsl.apps.server_app",
-    "wahoo_dashboard.py": "wahoo_lsl.apps.dashboard_app",
+    "trainer_server.py": "wahoo_lsl.apps.server_app",
+    "trainer_dashboard.py": "wahoo_lsl.apps.dashboard_app",
     "wahoo_worker.py": "wahoo_lsl.apps.worker",
 }
 
@@ -29,7 +29,7 @@ def test_entry_scripts_call_existing_mains(script, module):
 
 def test_spec_builds_the_three_executables():
     spec = (PKG / "wahoo.spec").read_text()
-    for name in ("WahooServer", "WahooDashboard", "wahoo-worker"):
+    for name in ("TrainerServer", "TrainerDashboard", "wahoo-worker"):
         assert f'"{name}"' in spec
     for script in ENTRIES:
         assert script in spec
@@ -41,7 +41,7 @@ def test_installer_sources_exist():
     assert sources, "no single-file sources found"
     for src in sources:
         assert (PKG / src.replace("\\", "/")).resolve().is_file(), src
-    assert "WahooServer.exe" in iss and "WahooDashboard.exe" in iss and "wahoo-worker.exe" in iss
+    assert "TrainerServer.exe" in iss and "TrainerDashboard.exe" in iss and "wahoo-worker.exe" in iss
 
 
 @pytest.mark.parametrize("name", ["server.ico", "dashboard.ico"])

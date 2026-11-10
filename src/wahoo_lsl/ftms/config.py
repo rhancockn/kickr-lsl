@@ -1,4 +1,4 @@
-"""FTMS controller config (spec §6). A separate file from the logger config."""
+"""FTMS controller config. A separate file from the logger config."""
 from __future__ import annotations
 
 import ipaddress

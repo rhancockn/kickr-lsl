@@ -1,4 +1,4 @@
-"""Wahoo Dashboard: the KICKR test dashboard fed by the CPS LSL stream instead of the log file."""
+"""Trainer Dashboard: the KICKR test dashboard fed by the CPS LSL stream instead of the log file."""
 from __future__ import annotations
 
 import argparse

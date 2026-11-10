@@ -1,7 +1,7 @@
 """wahoo-worker server: the FTMS service and the CPS logger in one process and one event loop.
 
 Windows allows only one process per BLE device, so both services share one connection
-(``SharedBackend``). The Wahoo Server app controls the worker over stdin and reads its stdout.
+(``SharedBackend``). The Trainer Server app controls the worker over stdin and reads its stdout.
 """
 from __future__ import annotations
 

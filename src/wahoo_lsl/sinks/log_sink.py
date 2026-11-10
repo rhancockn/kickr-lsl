@@ -1,4 +1,4 @@
-"""JSONL data log sink (spec §7.5): one JSON object per line."""
+"""JSONL data log sink: one JSON object per line."""
 from __future__ import annotations
 
 import json

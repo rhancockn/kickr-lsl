@@ -1,4 +1,4 @@
-"""Load and validate the JSON config (spec §5)."""
+"""Load and validate the JSON config."""
 from __future__ import annotations
 
 import json

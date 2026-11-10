@@ -1,4 +1,4 @@
-"""Target-power ramp for slewed FTMS targets (spec: FTMS target slew). Pure: no I/O, no clocks."""
+"""Target-power ramp for slewed FTMS targets. Pure: no I/O, no clocks."""
 from __future__ import annotations
 
 import math

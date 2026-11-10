@@ -1,4 +1,4 @@
-"""FTMS power control for the Wahoo KICKR (spec 2026-10-21).
+"""FTMS power control for the Wahoo KICKR.
 
 This package's __init__ and client.py import only the standard library, so the client can
 be used from environments without bleak or pylsl.

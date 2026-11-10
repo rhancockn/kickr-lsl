@@ -1,15 +1,15 @@
 # KICKR power control: client guide
 
-The FTMS service (`wahoo-ftms serve`, or Wahoo Server) holds a Wahoo KICKR in ERG mode and
+The FTMS service (`wahoo-ftms serve`, or Trainer Server) holds a Wahoo KICKR in ERG mode and
 accepts one client at a time over TCP. A client sets the target power, the ramp rate, and
-reads status. The full reference is the "Wire protocol" section of `README.md`.
+reads status.
 
 ## Connecting
 
 - Address: `127.0.0.1:47610` on the server PC. From another lab PC, use `<server-pc>:47610`; that
   PC must be listed in the service's `ftms.allowed_hosts` (see `README.md`, "Remote clients").
 - Protocol: plain TCP, UTF-8, one JSON object per line ending in `\n`. Each request gets exactly
-  one reply line. The server sends nothing until you send a request.
+  one reply line. Request lines are limited to 4096 bytes. The server sends nothing until you send a request.
 - Sequence:
   1. Open the socket.
   2. Send `connect` to check you are accepted.
@@ -25,10 +25,33 @@ reads status. The full reference is the "Wire protocol" section of `README.md`.
 | `{"cmd":"connect"}` | `peer` (your address as the server sees it), `link` (`ready`, `reconnecting` or `closed`), `link_epoch` |
 | `{"cmd":"set","watts":150}` | `target_w` (after the `max_watts` limit), `clamped`. It returns before the trainer confirms. |
 | `{"cmd":"slew","w_per_s":20}` | `slew_w_per_s`. Increases ramp at this rate; 0 = immediate. Decreases are always immediate. It lasts until you disconnect. |
-| `{"cmd":"read"}` | `link`, `link_epoch`, `target{requested_w, confirmed_w, pending, setpoint_w, ramp_end_t_lsl, t_lsl}`, `power{watts, t_lsl, age_s}`, `last_error`, `slew{w_per_s, update_interval_s}` |
+| `{"cmd":"read"}` | `link`, `link_epoch`, `target{requested_w, confirmed_w, pending, setpoint_w, ramp_end_t_lsl, t_lsl}`, `power{watts, t_lsl, age_s}`, `last_error`, `last_error_t_lsl`, `slew{w_per_s, update_interval_s}` |
 | `{"cmd":"disconnect"}` | Nothing extra. The server replies at once, closes the connection, then spins the trainer down to 0 W. |
 
 `t_lsl` values are LSL clock times (`pylsl.local_clock()`) on the server PC.
+
+## Slew and rate limits
+
+`set` always replies at once with the accepted target. The server then sends it to the trainer
+as follows; poll `read` to see where it is.
+
+- **Rate limit.** The server sends at most `ftms.max_rate_hz` targets per second (default 2). If you
+  send targets faster, only the latest is sent, so you can stream targets freely (for example,
+  from a slider) without queuing.
+- **Increases are slewed.** A higher target ramps at the slew rate (default `ftms.slew_w_per_s`,
+  10 W/s). The server sends an intermediate setpoint every `ftms.slew_update_interval_s` (default
+  10 s), and the KICKR's own ERG ramp smooths each step. For example, 100 → 250 W at 10 W/s sends
+  200 W after 10 s and 250 W after 15 s. A change smaller than one interval's worth is sent once,
+  when its ramp ends. `read` shows the current `target.setpoint_w` and `target.ramp_end_t_lsl`.
+- **Decreases are immediate.** A lower target, including 0 W, is sent straight away (subject only
+  to the rate limit) and cancels any ramp. A new higher target or a rate change during a ramp
+  continues from the current setpoint.
+- **Your rate.** `slew` sets the rate for your connection; 0 sends every target directly. It resets
+  to the configured default when you disconnect.
+- **Limits.** Targets above `ftms.max_watts` (if set) or the trainer's own range are clamped;
+  `set` reports this with `clamped: true`.
+- **Disconnects** (yours, a Bluetooth drop or shutdown) always go to 0 W immediately, without a
+  ramp.
 
 ## Errors
 
@@ -40,6 +63,9 @@ An error reply is `{"ok": false, "error": "<code>", "detail": "<text>"}`.
 | `busy` | Another client is connected. | closed |
 | `link_down` | The trainer is reconnecting; retry the command. | open |
 | `invalid_watts` / `invalid_slew` / `bad_request` | Bad request. | open, except a request over 4096 bytes |
+
+`busy` and `not_allowed` are sent as soon as the connection is accepted (for a remote PC, within
+about 1.5 s) and arrive as the reply to your first request.
 
 When `link_epoch` increases, the trainer has reconnected and is back at 0 W: send your target
 again.

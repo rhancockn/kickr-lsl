@@ -44,7 +44,7 @@ def service_commands(debug: bool = False, ftms_enabled: bool = True) -> dict[str
 
 def dashboard_argv() -> list[str]:
     if frozen():
-        return [_sibling("WahooDashboard")]
+        return [_sibling("TrainerDashboard")]
     return [sys.executable, "-m", "wahoo_lsl.apps.dashboard_app"]
 
 

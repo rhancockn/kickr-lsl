@@ -1,4 +1,4 @@
-"""Queues, dispatcher and sink runners (spec §7).
+"""Queues, dispatcher and sink runners.
 
 BLE callback -> ingest_q -> Dispatcher (parse, derive, warn, fan-out) -> one queue + thread per Sink.
 Queues are unbounded: nothing is ever dropped. Items are immutable and shared by all sinks.

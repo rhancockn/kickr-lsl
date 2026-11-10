@@ -4,10 +4,10 @@
 
 Two apps are installed together.
 
-- **Wahoo Server** starts the FTMS control service and the CPS logger/LSL streamer, and shows their status in a small window. Both run inside one `wahoo-worker` process that shares a single Bluetooth connection to the KICKR (Windows allows only one process per KICKR).
-- **Wahoo Dashboard** is the test dashboard. Open it only when you need manual control of the trainer. It reads CPS data from the LSL stream and controls the trainer through the FTMS service.
+- **Trainer Server** starts the FTMS control service and the CPS logger/LSL streamer, and shows their status in a small window. Both run inside one `wahoo-worker` process that shares a single Bluetooth connection to the KICKR (Windows allows only one process per KICKR).
+- **Trainer Dashboard** is the test dashboard. Open it only when you need manual control of the trainer. It reads CPS data from the LSL stream and controls the trainer through the FTMS service.
 
-The normal workflow: open Wahoo Server and leave it open while you record. Open Wahoo Dashboard only when you need to set the trainer's power by hand. Closing Wahoo Server spins the trainer down to 0 W and then stops both services.
+The normal workflow: open Trainer Server and leave it open while you record. Open Trainer Dashboard only when you need to set the trainer's power by hand. Closing Trainer Server spins the trainer down to 0 W and then stops both services.
 
 No Python installation is needed on the lab machine.
 
@@ -29,7 +29,7 @@ The script makes a clean virtual environment, installs the project with the `win
 
 | What | Where |
 |---|---|
-| Programs (`WahooServer.exe`, `WahooDashboard.exe`, `wahoo-worker.exe`) | `C:\Program Files\Wahoo LSL` |
+| Programs (`TrainerServer.exe`, `TrainerDashboard.exe`, `wahoo-worker.exe`) | `C:\Program Files\Wahoo LSL` |
 | CPS logger config | `%ProgramData%\wahoo-lsl\config.json` |
 | FTMS service config | `%ProgramData%\wahoo-lsl\ftms.json` |
 | Logs | `%ProgramData%\wahoo-lsl\logs\` |
@@ -40,7 +40,7 @@ The data folder is `WAHOO_LSL_HOME` if that environment variable is set, otherwi
 
 ## First-run configuration
 
-Edit the `device` section (`name` or `mac`) in **both** config files, `config.json` and `ftms.json`, using the same values. Then click **Restart services** in Wahoo Server.
+Edit the `device` section (`name` or `mac`) in **both** config files, `config.json` and `ftms.json`, using the same values. Then click **Restart services** in Trainer Server.
 
 To find the trainer, run these in a Command Prompt:
 
@@ -49,7 +49,7 @@ To find the trainer, run these in a Command Prompt:
 "C:\Program Files\Wahoo LSL\wahoo-worker.exe" lsl list-features -c "%ProgramData%\wahoo-lsl\config.json"
 ```
 
-In `ftms.json`, `ftms.host` must be a loopback host: `127.0.0.1`, `::1` or `localhost`. Any other value is a config error. The FTMS service accepts local clients only.
+By default the FTMS service accepts clients on this PC only. To let other lab PCs control the trainer, list them in `ftms.allowed_hosts` in `ftms.json` (see "Remote clients" in the README), then click **Restart services**. The installer's firewall rule already covers private networks. Client code for Python, MATLAB and Unity is in [CLIENT.md](../CLIENT.md).
 
 ## The server window
 
@@ -67,7 +67,7 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 **FTMS control checkbox.** It is ticked at every launch. Untick it to let another app or device, such as a training app, control the trainer while logging and LSL continue.
 
 - Unticking asks for confirmation if a client is connected, spins the trainer down to 0 W inside the worker, and stops only the FTMS service. The CPS logger and LSL stream keep running with no gap.
-- Unticking keeps the worker's BLE link to the KICKR up, because the CPS logger needs it. Control therefore passes to another app by that app taking control (the KICKR hands it over), not by this one disconnecting. Test steps that use another device must confirm that the other device really gets control.
+- Unticking keeps the worker's BLE link to the KICKR up, because the CPS logger needs it. Control therefore passes to another app by that app taking control (the KICKR hands it over), not by this one disconnecting.
 - Tick it again once the other app has disconnected; the FTMS service starts again and the row returns to `ready`.
 - Ticking while nothing is running only changes what the next start uses.
 - If the FTMS service stops on its own, the box unticks itself.
@@ -76,11 +76,11 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 
 - **Open logs folder** opens the `logs` folder.
 - **Restart services** stops both services in order and starts them again, re-reading `config.json` and `ftms.json`.
-- **Open dashboard** starts Wahoo Dashboard.
+- **Open dashboard** starts Trainer Dashboard.
 
 **Closing.** If an FTMS client is connected you are asked to confirm. The server then tells the worker to stop: it spins the trainer down to 0 W, stops the FTMS service, then the CPS logger. A second close while it is waiting skips the waits. Closing during a restart is still an ordered stop.
 
-**Spin-down to 0 W.** The server no longer connects to the FTMS service to check 0 W (that connection was the "client connected, then disconnected" seen in the FTMS log). The FTMS service spins the trainer down in-process when it stops, whether you close the window, untick FTMS control or the server dies, and the log shows the result: `spin-down (...): 0 W confirmed` or a warning. Only a forced kill skips it: ending the worker in Task Manager, or a hung BLE stop that outlasts the grace period (the worker is then terminated hard, with no spin-down), or a second close while the server is still waiting (that terminates the worker immediately and can skip the 0 W spin-down).
+**Spin-down to 0 W.** The FTMS service spins the trainer down in-process when it stops, whether you close the window, untick FTMS control or the server dies, and the log shows the result: `spin-down (...): 0 W confirmed` or a warning. Only a forced kill skips it: ending the worker in Task Manager, or a hung BLE stop that outlasts the grace period (the worker is then terminated hard, with no spin-down), or a second close while the server is still waiting (that terminates the worker immediately and can skip the 0 W spin-down).
 
 **One worker, one Bluetooth link.** If the link drops, both services reconnect on their own onto one new connection; the rows show `reconnecting` meanwhile. If one service gives up, FTMS unticks itself and the CPS logger carries on; if the CPS logger gives up, the session ends.
 
@@ -88,12 +88,12 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 
 **Single instance.** Two different messages can appear when you open the server, and the second window then exits.
 
-- "Wahoo Server is already running." Another server holds the lock file `server.lock` in the data folder.
+- "Trainer Server is already running." Another server holds the lock file `server.lock` in the data folder.
 - "Another program is using host:port (the FTMS port in ftms.json)." Something else is listening on the FTMS port.
 
 ## The dashboard
 
-Wahoo Dashboard takes its defaults from the server's configs: FTMS host, port and slew rate come from `ftms.json`, and wheel circumference from `config.json`. It follows the first CPS LSL stream it finds, and the status bar names it. With several streams the status bar shows "(1 of N CPS streams)". To choose one, run it with `--stream <source_id>`, using the source id shown in the server's LSL stream row. `--host`, `--port`, `--max-watts`, `--circumference-m` and `--slew` override the other defaults.
+Trainer Dashboard takes its defaults from the server's configs: FTMS host, port and slew rate come from `ftms.json`, and wheel circumference from `config.json`. It follows the first CPS LSL stream it finds, and the status bar names it. With several streams the status bar shows "(1 of N CPS streams)". To choose one, run it with `--stream <source_id>`, using the source id shown in the server's LSL stream row. `--host`, `--port`, `--max-watts`, `--circumference-m` and `--slew` override the other defaults.
 
 ## Logs
 
@@ -106,35 +106,9 @@ Logs are in `%ProgramData%\wahoo-lsl\logs\`.
 
 The installer adds an inbound allow rule named "Wahoo LSL worker" for `wahoo-worker.exe` on **private** networks, so LabRecorder on another PC on the private network can see the stream without a firewall prompt. Uninstalling removes the rule. On a public network the rule does not apply.
 
-## Manual test checklist (Windows)
-
-1. Build; install on a clean machine; SmartScreen; shortcuts.
-2. Server with the trainer off: "starting / connecting"; no console window is visible.
-3. Trainer on: FTMS ready, CPS streaming, LSL name, power updating.
-4. Dashboard: graphs live; the slider changes the trainer's power.
-5. Close the server with the dashboard connected: prompt, "spinning down…", trainer at
-   0 W (the log shows `0 W confirmed`), no `wahoo-worker.exe` left in Task Manager.
-6. Edit a config, then Restart services: the change takes effect.
-7. A second server instance shows the "already running" message.
-8. LabRecorder on another PC on the private network sees the stream.
-9. Untick FTMS control while recording: no gap in the CPS log or LSL stream; another
-   app/device (e.g. a training app) can connect to the KICKR and control resistance while
-   the CPS logger stays connected. Tick it again after the other app disconnects: FTMS ready.
-10. Close with FTMS control off: the worker is gone. Open a second server
-    while FTMS is off: "already running".
-11. Both services run together against one KICKR (no "access denied" or "does not expose
-    the Cycling Power Service" in the log).
-12. Switch the KICKR off for 10 s mid-session and back on: both reconnect, no restart.
-13. Move it out of range and back: both reconnect.
-14. Untick FTMS during streaming: no gap in CPS; another device can take control. Tick it
-    again. Confirm that the other device actually took control (the server keeps its BLE
-    link up, so control passes by the other app taking it).
-15. Close the window with power set: the log shows `0 W confirmed`.
-16. Uninstall: `%ProgramData%\wahoo-lsl` configs and logs remain.
-
 ## Limitations
 
-`wahoo-dashboard` (the command-line launcher, not the apps) still runs two processes, so on Windows it cannot run both services against one KICKR. Use Wahoo Server.
+`wahoo-dashboard` (the command-line launcher, not the apps) still runs two processes, so on Windows it cannot run both services against one KICKR. Use Trainer Server.
 
 ## Developing on macOS/Linux
 

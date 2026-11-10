@@ -1,4 +1,4 @@
-"""Thread-safe warn-once helper (spec §10)."""
+"""Thread-safe warn-once helper."""
 from __future__ import annotations
 
 import logging

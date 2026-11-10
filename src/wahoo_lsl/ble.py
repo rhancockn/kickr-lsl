@@ -1,4 +1,4 @@
-"""BLE layer: the only module that imports bleak (spec §8)."""
+"""BLE layer: the only module that imports bleak."""
 from __future__ import annotations
 
 import asyncio

@@ -1,4 +1,4 @@
-"""JSON-lines TCP endpoint (spec §8). One client at a time.
+"""JSON-lines TCP endpoint. One client at a time.
 
 Loopback clients are always accepted. With a non-empty `allowed` list the server listens on the
 LAN and also accepts clients whose address matches a listed IP or DNS name (see allow.py);

@@ -1,4 +1,4 @@
-"""Debug sink: print each parsed sample and event (spec §7.5, --debug only)."""
+"""Debug sink: print each parsed sample and event (--debug only)."""
 from __future__ import annotations
 
 import sys

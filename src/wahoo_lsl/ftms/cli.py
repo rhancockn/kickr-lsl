@@ -1,4 +1,4 @@
-"""wahoo-ftms command line (spec §9.2).
+"""wahoo-ftms command line.
 
 `read` and `set` use only the stdlib client; the `serve` path imports BLE code lazily.
 """

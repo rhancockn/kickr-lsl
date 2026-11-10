@@ -1,4 +1,4 @@
-"""Cycling Power Service constants and pure parsers (spec §6).
+"""Cycling Power Service constants and pure parsers.
 
 No I/O, no bleak, no threading: everything here is testable with byte fixtures.
 All multi-byte values are little-endian.
@@ -45,7 +45,7 @@ class MeasurementSpec:
     feature_bit: int | None  # CP Feature bit; None = always supported
 
 
-# Single source of truth for the config vocabulary (spec §6.3).
+# Single source of truth for the config vocabulary.
 MEASUREMENTS: dict[str, MeasurementSpec] = {
     spec.name: spec
     for spec in (
@@ -197,7 +197,7 @@ def _parse_body(r: _Reader, flags: int) -> Measurement:
     return Measurement(flags, values, frozenset(present))
 
 
-# CP Feature (0x2A65) named single bits (spec §6.4). Bits 20–21 are a 2-bit value.
+# CP Feature (0x2A65) named single bits. Bits 20–21 are a 2-bit value.
 FEATURE_BITS: dict[int, str] = {
     0: "pedal_power_balance",
     1: "accumulated_torque",
