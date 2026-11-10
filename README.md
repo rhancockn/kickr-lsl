@@ -13,7 +13,7 @@ macOS, Windows and Linux.
 - **Windows apps:** Wahoo Server and Wahoo Dashboard, with an installer; see
   [docs/windows-apps.md](docs/windows-apps.md).
 
-This project is not affiliated with or endorsed by Wahoo Fitness. Wahoo and KICKR are trademarks of
+Licensed under the [MIT License](LICENSE). This project is not affiliated with or endorsed by Wahoo Fitness. Wahoo and KICKR are trademarks of
 their owner.
 
 ## Install
@@ -147,7 +147,7 @@ The trainer goes back to 0 W whenever the client disconnects (including when `wa
 exits), on any service error, and on shutdown. After a BLE drop the service reconnects and sets
 0 W; `link_epoch` increases and the client must send its target again.
 
-**Slew.** Only power increases are slewed; a decrease (including to 0 W) goes straight to the
+**Slew.** (Client-side summary: [CLIENT.md](CLIENT.md), "Slew and rate limits".) Only power increases are slewed; a decrease (including to 0 W) goes straight to the
 trainer. By default the service ramps up to each higher target at `ftms.slew_w_per_s` (10 W/s), sending
 an interpolated setpoint every `ftms.slew_update_interval_s` (10 s) so the KICKR's own ERG ramp smooths
 each step: 100 → 250 W sends 200 W after 10 s and 250 W after 15 s; a change smaller than one

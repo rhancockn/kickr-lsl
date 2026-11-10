@@ -30,6 +30,29 @@ reads status.
 
 `t_lsl` values are LSL clock times (`pylsl.local_clock()`) on the server PC.
 
+## Slew and rate limits
+
+`set` always replies at once with the accepted target. The server then sends it to the trainer
+as follows; poll `read` to see where it is.
+
+- **Rate limit.** The server sends at most `ftms.max_rate_hz` targets per second (default 2). If you
+  send targets faster, only the latest is sent, so you can stream targets freely (for example,
+  from a slider) without queuing.
+- **Increases are slewed.** A higher target ramps at the slew rate (default `ftms.slew_w_per_s`,
+  10 W/s). The server sends an intermediate setpoint every `ftms.slew_update_interval_s` (default
+  10 s), and the KICKR's own ERG ramp smooths each step. For example, 100 → 250 W at 10 W/s sends
+  200 W after 10 s and 250 W after 15 s. A change smaller than one interval's worth is sent once,
+  when its ramp ends. `read` shows the current `target.setpoint_w` and `target.ramp_end_t_lsl`.
+- **Decreases are immediate.** A lower target, including 0 W, is sent straight away (subject only
+  to the rate limit) and cancels any ramp. A new higher target or a rate change during a ramp
+  continues from the current setpoint.
+- **Your rate.** `slew` sets the rate for your connection; 0 sends every target directly. It resets
+  to the configured default when you disconnect.
+- **Limits.** Targets above `ftms.max_watts` (if set) or the trainer's own range are clamped;
+  `set` reports this with `clamped: true`.
+- **Disconnects** (yours, a Bluetooth drop or shutdown) always go to 0 W immediately, without a
+  ramp.
+
 ## Errors
 
 An error reply is `{"ok": false, "error": "<code>", "detail": "<text>"}`.
