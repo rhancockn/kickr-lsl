@@ -1,4 +1,4 @@
-"""Wahoo Server status from the children's relayed log lines ("[ftms] ...", "[cps] ..."). Pure, no Tk.
+"""Trainer Server status from the children's relayed log lines ("[ftms] ...", "[cps] ..."). Pure, no Tk.
 
 The patterns match existing log messages; tests/test_apps_server_status.py fails if one is reworded.
 """

@@ -30,7 +30,7 @@ def test_worker_argv_unpackaged(monkeypatch):
 
 def test_worker_argv_packaged_uses_sibling_exe(monkeypatch, tmp_path):
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "WahooServer.exe"))
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "TrainerServer.exe"))
     monkeypatch.setattr(sys, "platform", "win32")
     assert paths.worker_argv("lsl", "run") == [str(tmp_path / "wahoo-worker.exe"), "lsl", "run"]
 
@@ -48,9 +48,9 @@ def test_dashboard_argv(monkeypatch, tmp_path):
     monkeypatch.delattr(sys, "frozen", raising=False)
     assert paths.dashboard_argv() == [sys.executable, "-m", "wahoo_lsl.apps.dashboard_app"]
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "WahooServer.exe"))
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "TrainerServer.exe"))
     monkeypatch.setattr(sys, "platform", "win32")
-    assert paths.dashboard_argv() == [str(tmp_path / "WahooDashboard.exe")]
+    assert paths.dashboard_argv() == [str(tmp_path / "TrainerDashboard.exe")]
 
 
 def test_connect_host_maps_wildcards_to_loopback():

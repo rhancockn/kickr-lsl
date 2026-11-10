@@ -1,1 +1,1 @@
-"""Standalone apps: Wahoo Server (FTMS service + CPS logger with a status window) and Wahoo Dashboard."""
+"""Standalone apps: Trainer Server (FTMS service + CPS logger with a status window) and Trainer Dashboard."""

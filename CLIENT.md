@@ -1,6 +1,6 @@
 # KICKR power control: client guide
 
-The FTMS service (`wahoo-ftms serve`, or Wahoo Server) holds a Wahoo KICKR in ERG mode and
+The FTMS service (`wahoo-ftms serve`, or Trainer Server) holds a Wahoo KICKR in ERG mode and
 accepts one client at a time over TCP. A client sets the target power, the ramp rate, and
 reads status.
 

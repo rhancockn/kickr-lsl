@@ -10,7 +10,7 @@ macOS, Windows and Linux.
   FTMS. Experiment code in Python, MATLAB, Unity or anything else that can open a TCP socket sets
   the target power through it; see [CLIENT.md](CLIENT.md).
 - **`wahoo-dashboard`** is a small window for testing both by hand.
-- **Windows apps:** Wahoo Server and Wahoo Dashboard, with an installer; see
+- **Windows apps:** Trainer Server and Trainer Dashboard, with an installer; see
   [docs/windows-apps.md](docs/windows-apps.md).
 
 Licensed under the [MIT License](LICENSE). This project is not affiliated with or endorsed by Wahoo Fitness. Wahoo and KICKR are trademarks of

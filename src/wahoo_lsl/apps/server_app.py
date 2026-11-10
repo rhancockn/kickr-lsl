@@ -1,4 +1,4 @@
-"""Wahoo Server: runs the FTMS control service and the CPS logger/LSL streamer, with a status window.
+"""Trainer Server: runs the FTMS control service and the CPS logger/LSL streamer, with a status window.
 
 Closing the window spins the trainer down (0 W check) and stops both services. The window never
 connects to the FTMS service itself, so it never takes the single client slot.
@@ -140,7 +140,7 @@ class ServerWindow:
 
     def _build(self) -> None:
         root = self.root
-        root.title("Wahoo Server")
+        root.title("Trainer Server")
         rows = tk.Frame(root, padx=8, pady=6)
         rows.pack(fill="x")
         self.state_text, self.ftms_text, self.cps_text = tk.StringVar(), tk.StringVar(), tk.StringVar()
@@ -198,7 +198,7 @@ class ServerWindow:
         """The checkbox changed: start or stop only the FTMS service (the CPS logger keeps running)."""
         enabled = self.ftms_var.get()
         if not enabled and self.status.client and self._running() and not self._confirm(
-                "Wahoo Server", "A client is controlling the trainer. Turn off FTMS control anyway?"):
+                "Trainer Server", "A client is controlling the trainer. Turn off FTMS control anyway?"):
             self.ftms_var.set(True)
             return
         if not self._running():
@@ -229,7 +229,7 @@ class ServerWindow:
                 self.supervisor.stop()  # second close: skip the grace periods
             return
         if self.status.client and self._running() and not self._confirm(
-                "Wahoo Server", "A client is controlling the trainer. Stop anyway?"):
+                "Trainer Server", "A client is controlling the trainer. Stop anyway?"):
             return
         stopping = self._restart_pending  # the supervisor is already stopping in order: do not hurry it
         self._closing, self._restart_pending = True, False
@@ -365,18 +365,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         lock = acquire_lock(home / LOCK_FILE)  # held until the process exits
     except OSError as e:
         root.withdraw()
-        messagebox.showerror("Wahoo Server", f"Cannot write to {home}: {e}")
+        messagebox.showerror("Trainer Server", f"Cannot write to {home}: {e}")
         root.destroy()
         return 1
     host, port = service_address(home)
     problem = None
     if lock is None:
-        problem = "Wahoo Server is already running."
+        problem = "Trainer Server is already running."
     elif already_running(host, port):
         problem = f"Another program is using {host}:{port} (the FTMS port in {FTMS_CONFIG})."
     if problem is not None:
         root.withdraw()
-        messagebox.showerror("Wahoo Server", problem)
+        messagebox.showerror("Trainer Server", problem)
         root.destroy()
         return 1
     attach_hidden_console()

@@ -1,4 +1,4 @@
-# PyInstaller spec: WahooServer.exe, WahooDashboard.exe and wahoo-worker.exe in one folder (WahooLSL).
+# PyInstaller spec: TrainerServer.exe, TrainerDashboard.exe and wahoo-worker.exe in one folder (WahooLSL).
 # Build with packaging\windows\build.ps1 on Windows.
 from pathlib import Path
 
@@ -9,8 +9,8 @@ HIDDEN = collect_submodules("wahoo_lsl") + collect_submodules("bleak") + collect
 BINARIES = collect_dynamic_libs("pylsl")  # liblsl (lsl.dll)
 
 APPS = (  # name, entry script, console, icon
-    ("WahooServer", "wahoo_server.py", False, "server.ico"),
-    ("WahooDashboard", "wahoo_dashboard.py", False, "dashboard.ico"),
+    ("TrainerServer", "trainer_server.py", False, "server.ico"),
+    ("TrainerDashboard", "trainer_dashboard.py", False, "dashboard.ico"),
     ("wahoo-worker", "wahoo_worker.py", True, None),
 )
 

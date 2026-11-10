@@ -4,10 +4,10 @@
 
 Two apps are installed together.
 
-- **Wahoo Server** starts the FTMS control service and the CPS logger/LSL streamer, and shows their status in a small window. Both run inside one `wahoo-worker` process that shares a single Bluetooth connection to the KICKR (Windows allows only one process per KICKR).
-- **Wahoo Dashboard** is the test dashboard. Open it only when you need manual control of the trainer. It reads CPS data from the LSL stream and controls the trainer through the FTMS service.
+- **Trainer Server** starts the FTMS control service and the CPS logger/LSL streamer, and shows their status in a small window. Both run inside one `wahoo-worker` process that shares a single Bluetooth connection to the KICKR (Windows allows only one process per KICKR).
+- **Trainer Dashboard** is the test dashboard. Open it only when you need manual control of the trainer. It reads CPS data from the LSL stream and controls the trainer through the FTMS service.
 
-The normal workflow: open Wahoo Server and leave it open while you record. Open Wahoo Dashboard only when you need to set the trainer's power by hand. Closing Wahoo Server spins the trainer down to 0 W and then stops both services.
+The normal workflow: open Trainer Server and leave it open while you record. Open Trainer Dashboard only when you need to set the trainer's power by hand. Closing Trainer Server spins the trainer down to 0 W and then stops both services.
 
 No Python installation is needed on the lab machine.
 
@@ -29,7 +29,7 @@ The script makes a clean virtual environment, installs the project with the `win
 
 | What | Where |
 |---|---|
-| Programs (`WahooServer.exe`, `WahooDashboard.exe`, `wahoo-worker.exe`) | `C:\Program Files\Wahoo LSL` |
+| Programs (`TrainerServer.exe`, `TrainerDashboard.exe`, `wahoo-worker.exe`) | `C:\Program Files\Wahoo LSL` |
 | CPS logger config | `%ProgramData%\wahoo-lsl\config.json` |
 | FTMS service config | `%ProgramData%\wahoo-lsl\ftms.json` |
 | Logs | `%ProgramData%\wahoo-lsl\logs\` |
@@ -40,7 +40,7 @@ The data folder is `WAHOO_LSL_HOME` if that environment variable is set, otherwi
 
 ## First-run configuration
 
-Edit the `device` section (`name` or `mac`) in **both** config files, `config.json` and `ftms.json`, using the same values. Then click **Restart services** in Wahoo Server.
+Edit the `device` section (`name` or `mac`) in **both** config files, `config.json` and `ftms.json`, using the same values. Then click **Restart services** in Trainer Server.
 
 To find the trainer, run these in a Command Prompt:
 
@@ -76,7 +76,7 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 
 - **Open logs folder** opens the `logs` folder.
 - **Restart services** stops both services in order and starts them again, re-reading `config.json` and `ftms.json`.
-- **Open dashboard** starts Wahoo Dashboard.
+- **Open dashboard** starts Trainer Dashboard.
 
 **Closing.** If an FTMS client is connected you are asked to confirm. The server then tells the worker to stop: it spins the trainer down to 0 W, stops the FTMS service, then the CPS logger. A second close while it is waiting skips the waits. Closing during a restart is still an ordered stop.
 
@@ -88,12 +88,12 @@ Only one FTMS client (the dashboard, a script or MATLAB) can control the trainer
 
 **Single instance.** Two different messages can appear when you open the server, and the second window then exits.
 
-- "Wahoo Server is already running." Another server holds the lock file `server.lock` in the data folder.
+- "Trainer Server is already running." Another server holds the lock file `server.lock` in the data folder.
 - "Another program is using host:port (the FTMS port in ftms.json)." Something else is listening on the FTMS port.
 
 ## The dashboard
 
-Wahoo Dashboard takes its defaults from the server's configs: FTMS host, port and slew rate come from `ftms.json`, and wheel circumference from `config.json`. It follows the first CPS LSL stream it finds, and the status bar names it. With several streams the status bar shows "(1 of N CPS streams)". To choose one, run it with `--stream <source_id>`, using the source id shown in the server's LSL stream row. `--host`, `--port`, `--max-watts`, `--circumference-m` and `--slew` override the other defaults.
+Trainer Dashboard takes its defaults from the server's configs: FTMS host, port and slew rate come from `ftms.json`, and wheel circumference from `config.json`. It follows the first CPS LSL stream it finds, and the status bar names it. With several streams the status bar shows "(1 of N CPS streams)". To choose one, run it with `--stream <source_id>`, using the source id shown in the server's LSL stream row. `--host`, `--port`, `--max-watts`, `--circumference-m` and `--slew` override the other defaults.
 
 ## Logs
 
@@ -108,7 +108,7 @@ The installer adds an inbound allow rule named "Wahoo LSL worker" for `wahoo-wor
 
 ## Limitations
 
-`wahoo-dashboard` (the command-line launcher, not the apps) still runs two processes, so on Windows it cannot run both services against one KICKR. Use Wahoo Server.
+`wahoo-dashboard` (the command-line launcher, not the apps) still runs two processes, so on Windows it cannot run both services against one KICKR. Use Trainer Server.
 
 ## Developing on macOS/Linux
 

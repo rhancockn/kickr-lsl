@@ -1,4 +1,4 @@
-; Wahoo LSL installer: Wahoo Server + Wahoo Dashboard (+ wahoo-worker). Build with build.ps1.
+; Wahoo LSL installer: Trainer Server + Trainer Dashboard (+ wahoo-worker). Build with build.ps1.
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
@@ -19,7 +19,7 @@ OutputDir=..\..\build\installer
 OutputBaseFilename=WahooLSL-Setup-{#AppVersion}
 Compression=lzma2
 SolidCompression=yes
-UninstallDisplayIcon={app}\WahooServer.exe
+UninstallDisplayIcon={app}\TrainerServer.exe
 
 [Tasks]
 Name: "desktopicons"; Description: "Create desktop icons"; Flags: unchecked
@@ -33,11 +33,20 @@ Source: "..\..\build\pyinstaller\dist\WahooLSL\*"; DestDir: "{app}"; Flags: igno
 Source: "..\..\config.example.json"; DestDir: "{commonappdata}\wahoo-lsl"; DestName: "config.json"; Flags: onlyifdoesntexist uninsneveruninstall
 Source: "..\..\ftms.example.json"; DestDir: "{commonappdata}\wahoo-lsl"; DestName: "ftms.json"; Flags: onlyifdoesntexist uninsneveruninstall
 
+[InstallDelete]
+; Apps renamed from Wahoo Server / Wahoo Dashboard: remove the old programs and shortcuts on upgrade.
+Type: files; Name: "{app}\WahooServer.exe"
+Type: files; Name: "{app}\WahooDashboard.exe"
+Type: files; Name: "{group}\Wahoo Server.lnk"
+Type: files; Name: "{group}\Wahoo Dashboard.lnk"
+Type: files; Name: "{autodesktop}\Wahoo Server.lnk"
+Type: files; Name: "{autodesktop}\Wahoo Dashboard.lnk"
+
 [Icons]
-Name: "{group}\Wahoo Server"; Filename: "{app}\WahooServer.exe"
-Name: "{group}\Wahoo Dashboard"; Filename: "{app}\WahooDashboard.exe"
-Name: "{autodesktop}\Wahoo Server"; Filename: "{app}\WahooServer.exe"; Tasks: desktopicons
-Name: "{autodesktop}\Wahoo Dashboard"; Filename: "{app}\WahooDashboard.exe"; Tasks: desktopicons
+Name: "{group}\Trainer Server"; Filename: "{app}\TrainerServer.exe"
+Name: "{group}\Trainer Dashboard"; Filename: "{app}\TrainerDashboard.exe"
+Name: "{autodesktop}\Trainer Server"; Filename: "{app}\TrainerServer.exe"; Tasks: desktopicons
+Name: "{autodesktop}\Trainer Dashboard"; Filename: "{app}\TrainerDashboard.exe"; Tasks: desktopicons
 
 [Run]
 ; LSL: let LabRecorder on other lab PCs (private network) see the stream without a firewall prompt.
